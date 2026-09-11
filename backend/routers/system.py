@@ -9,7 +9,7 @@ from database import get_db
 from dependencies import get_current_user
 from config import DATABASE_URL, OLLAMA_BASE_URL, GEMINI_BASE_URL
 from models import User
-from routers.settings import get_active_provider, get_provider_status
+import ai_providers
 
 
 router = APIRouter(
@@ -125,28 +125,36 @@ async def get_system_status(
         "label": "JWT aktif",
     }
 
-    # --- AI (PROVIDER AKTIF: OLLAMA ATAU GEMINI) ---
+    # --- AI (PROVIDER AKTIF, PROVIDER APAPUN YANG TERDAFTAR) ---
     # Provider yang ditampilkan mengikuti pilihan admin di halaman
-    # Pengaturan > Model AI (tersimpan di t_app_setting), bukan
-    # hardcode ke Ollama — supaya kartu ini tetap akurat kalau
-    # admin sudah pindah ke Gemini.
-    active_provider = get_active_provider(db)
+    # Pengaturan > AI (tersimpan di t_app_setting) lewat registry
+    # generik ai_providers.py — kartu ini otomatis akurat untuk
+    # provider baru mana pun tanpa perlu diubah.
+    active_provider = ai_providers.get_active_provider(db)
 
-    provider_status = await get_provider_status(db, active_provider)
+    provider_status = await ai_providers.get_provider_status(db, active_provider)
+
+    # "host"/"base_url" cuma info kosmetik tambahan untuk 2 provider
+    # bawaan (Ollama = alamat lokal, Gemini = endpoint cloud). Untuk
+    # provider baru yang belum dikenal di sini, cukup tampilkan
+    # labelnya saja — tidak memengaruhi status online/offline di atas.
+    if active_provider == "OLLAMA":
+        host = parse_ai_host(OLLAMA_BASE_URL)
+        base_url = OLLAMA_BASE_URL
+    elif active_provider == "GEMINI":
+        host = "Google Gemini (cloud)"
+        base_url = GEMINI_BASE_URL
+    else:
+        host = provider_status.label
+        base_url = "-"
 
     ai_status = {
         "online": provider_status.online,
         "provider": provider_status.label,
         "model": provider_status.model,
         "model_ready": provider_status.online and provider_status.configured,
-        "host": (
-            parse_ai_host(OLLAMA_BASE_URL)
-            if active_provider == "OLLAMA"
-            else "Google Gemini (cloud)"
-        ),
-        "base_url": (
-            OLLAMA_BASE_URL if active_provider == "OLLAMA" else GEMINI_BASE_URL
-        ),
+        "host": host,
+        "base_url": base_url,
         "detail": provider_status.detail,
     }
 

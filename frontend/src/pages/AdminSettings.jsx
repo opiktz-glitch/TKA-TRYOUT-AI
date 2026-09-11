@@ -7,13 +7,10 @@ import { IconUser, IconKey } from "../components/Icons";
 
 import {
   updateMyAccountProfile,
-  getAIModelSetting,
-  updateAIModelSetting,
-  resetAIModelSetting,
   getAIProviders,
   updateActiveProvider,
-  updateGeminiSetting,
-  clearGeminiSetting,
+  updateProviderConfig,
+  clearProviderConfig,
 } from "../services/api";
 import { useAuth } from "../auth/AuthContext";
 
@@ -35,32 +32,34 @@ function AdminSettings() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  // --- Pengaturan Model AI (Ollama) ---
-  const [aiSetting, setAiSetting] = useState(null);
-  const [selectedModel, setSelectedModel] = useState("");
-  const [aiLoading, setAiLoading] = useState(true);
-  const [aiSaving, setAiSaving] = useState(false);
-  const [aiError, setAiError] = useState("");
-  const [aiSuccess, setAiSuccess] = useState("");
+  // ======================================================
+  // PROVIDER AI — GENERIK
+  //
+  // "providers" datang dari backend sebagai LIST (bukan field
+  // terpisah per nama seperti "ollama"/"gemini"). Jadi kalau nanti
+  // ada provider baru didaftarkan di backend/ai_providers.py, UI
+  // di bawah ini otomatis ikut menampilkannya tanpa perlu tambahan
+  // state atau komponen baru.
+  // ======================================================
 
-  // --- Provider AI (Ollama vs Gemini) ---
   const [providers, setProviders] = useState(null);
-  const [providerChoice, setProviderChoice] = useState("OLLAMA");
+  const [providerChoice, setProviderChoice] = useState("");
   const [providerLoading, setProviderLoading] = useState(true);
   const [providerSaving, setProviderSaving] = useState(false);
   const [providerError, setProviderError] = useState("");
   const [providerSuccess, setProviderSuccess] = useState("");
 
-  // --- Koneksi Gemini (API key bisa diganti-ganti dari sini) ---
-  const [geminiApiKeyInput, setGeminiApiKeyInput] = useState("");
-  const [geminiModelInput, setGeminiModelInput] = useState("");
-  const [geminiSaving, setGeminiSaving] = useState(false);
-  const [geminiError, setGeminiError] = useState("");
-  const [geminiSuccess, setGeminiSuccess] = useState("");
+  // Form konfigurasi (API key & model) per provider, key-nya =
+  // provider key (mis. "GEMINI"). apiKey sengaja SELALU dimulai
+  // kosong (key asli tidak pernah dikirim balik oleh backend);
+  // model diisi dari nilai yang sedang aktif supaya enak diedit.
+  const [configDrafts, setConfigDrafts] = useState({});
+  const [configSaving, setConfigSaving] = useState({});
+  const [configError, setConfigError] = useState({});
+  const [configSuccess, setConfigSuccess] = useState({});
 
 
   useEffect(() => {
-    loadAiSetting();
     loadProviders();
   }, []);
 
@@ -71,9 +70,15 @@ function AdminSettings() {
 
     try {
       const data = await getAIProviders();
+
       setProviders(data);
       setProviderChoice(data.active_provider);
-      setGeminiModelInput(data.gemini?.model || "gemini-2.5-flash");
+
+      const drafts = {};
+      for (const p of data.providers) {
+        drafts[p.provider] = { apiKey: "", model: p.model || "" };
+      }
+      setConfigDrafts(drafts);
     } catch (err) {
       console.error("GET AI PROVIDERS ERROR:", err);
       setProviderError(err.message || "Gagal memuat status provider AI");
@@ -94,11 +99,12 @@ function AdminSettings() {
 
       setProviders(data);
       setProviderChoice(data.active_provider);
-      setProviderSuccess(
-        `Provider AI aktif sekarang: ${
-          data.active_provider === "GEMINI" ? "Google Gemini" : "Ollama"
-        }.`
-      );
+
+      const activeLabel =
+        data.providers.find((p) => p.provider === data.active_provider)?.label ||
+        data.active_provider;
+
+      setProviderSuccess(`Provider AI aktif sekarang: ${activeLabel}.`);
     } catch (err) {
       console.error("UPDATE AI PROVIDER ERROR:", err);
       setProviderError(err.message || "Gagal mengganti provider AI aktif");
@@ -108,129 +114,100 @@ function AdminSettings() {
   }
 
 
-  async function handleSaveGemini() {
-    setGeminiError("");
-    setGeminiSuccess("");
+  function updateDraft(providerKey, field, value) {
+    setConfigDrafts((prev) => ({
+      ...prev,
+      [providerKey]: { ...prev[providerKey], [field]: value },
+    }));
+  }
 
-    const trimmedKey = geminiApiKeyInput.trim();
-    const trimmedModel = geminiModelInput.trim();
+
+  async function handleSaveProviderConfig(providerKey) {
+    setConfigError((prev) => ({ ...prev, [providerKey]: "" }));
+    setConfigSuccess((prev) => ({ ...prev, [providerKey]: "" }));
+
+    const draft = configDrafts[providerKey] || {};
+    const trimmedKey = (draft.apiKey || "").trim();
+    const trimmedModel = (draft.model || "").trim();
 
     if (!trimmedModel) {
-      setGeminiError("Nama model Gemini wajib diisi");
+      setConfigError((prev) => ({
+        ...prev,
+        [providerKey]: "Nama model wajib diisi",
+      }));
       return;
     }
 
     try {
-      setGeminiSaving(true);
+      setConfigSaving((prev) => ({ ...prev, [providerKey]: true }));
 
       // Kalau input key dikosongkan, jangan kirim api_key sama
       // sekali (undefined) supaya key lama yang sudah tersimpan
       // di database tidak ikut terhapus hanya karena admin cuma
       // mau ganti nama model.
-      const data = await updateGeminiSetting({
+      const data = await updateProviderConfig(providerKey, {
         apiKey: trimmedKey ? trimmedKey : undefined,
         model: trimmedModel,
       });
 
       setProviders(data);
-      setGeminiApiKeyInput("");
-      setGeminiSuccess(
-        trimmedKey
-          ? "API key & model Gemini berhasil disimpan."
-          : "Model Gemini berhasil diperbarui."
-      );
+
+      const updated = data.providers.find((p) => p.provider === providerKey);
+
+      setConfigDrafts((prev) => ({
+        ...prev,
+        [providerKey]: { apiKey: "", model: updated?.model || trimmedModel },
+      }));
+
+      setConfigSuccess((prev) => ({
+        ...prev,
+        [providerKey]: trimmedKey
+          ? "API key & model berhasil disimpan."
+          : "Model berhasil diperbarui.",
+      }));
     } catch (err) {
-      console.error("UPDATE GEMINI SETTING ERROR:", err);
-      setGeminiError(err.message || "Gagal menyimpan pengaturan Gemini");
+      console.error("UPDATE PROVIDER CONFIG ERROR:", err);
+      setConfigError((prev) => ({
+        ...prev,
+        [providerKey]: err.message || "Gagal menyimpan pengaturan",
+      }));
     } finally {
-      setGeminiSaving(false);
+      setConfigSaving((prev) => ({ ...prev, [providerKey]: false }));
     }
   }
 
 
-  async function handleClearGemini() {
-    setGeminiError("");
-    setGeminiSuccess("");
+  async function handleClearProviderConfig(providerKey) {
+    setConfigError((prev) => ({ ...prev, [providerKey]: "" }));
+    setConfigSuccess((prev) => ({ ...prev, [providerKey]: "" }));
 
     try {
-      setGeminiSaving(true);
+      setConfigSaving((prev) => ({ ...prev, [providerKey]: true }));
 
-      const data = await clearGeminiSetting();
+      const data = await clearProviderConfig(providerKey);
 
       setProviders(data);
       setProviderChoice(data.active_provider);
-      setGeminiApiKeyInput("");
-      setGeminiModelInput(data.gemini?.model || "gemini-2.5-flash");
-      setGeminiSuccess("API key Gemini telah dihapus.");
+
+      const updated = data.providers.find((p) => p.provider === providerKey);
+
+      setConfigDrafts((prev) => ({
+        ...prev,
+        [providerKey]: { apiKey: "", model: updated?.model || "" },
+      }));
+
+      setConfigSuccess((prev) => ({
+        ...prev,
+        [providerKey]: "API key telah dihapus.",
+      }));
     } catch (err) {
-      console.error("CLEAR GEMINI SETTING ERROR:", err);
-      setGeminiError(err.message || "Gagal menghapus API key Gemini");
+      console.error("CLEAR PROVIDER CONFIG ERROR:", err);
+      setConfigError((prev) => ({
+        ...prev,
+        [providerKey]: err.message || "Gagal menghapus API key",
+      }));
     } finally {
-      setGeminiSaving(false);
-    }
-  }
-
-
-  async function loadAiSetting() {
-    setAiLoading(true);
-    setAiError("");
-
-    try {
-      const data = await getAIModelSetting();
-      setAiSetting(data);
-      setSelectedModel(data.active_model);
-    } catch (err) {
-      console.error("GET AI MODEL SETTING ERROR:", err);
-      setAiError(err.message || "Gagal memuat pengaturan model AI");
-    } finally {
-      setAiLoading(false);
-    }
-  }
-
-
-  async function handleSaveAiModel() {
-    setAiError("");
-    setAiSuccess("");
-
-    if (!selectedModel.trim()) {
-      setAiError("Pilih atau isi nama model terlebih dahulu");
-      return;
-    }
-
-    try {
-      setAiSaving(true);
-
-      const data = await updateAIModelSetting(selectedModel.trim());
-
-      setAiSetting(data);
-      setSelectedModel(data.active_model);
-      setAiSuccess("Model AI berhasil diperbarui, langsung aktif tanpa perlu restart server.");
-    } catch (err) {
-      console.error("UPDATE AI MODEL SETTING ERROR:", err);
-      setAiError(err.message || "Gagal menyimpan model AI");
-    } finally {
-      setAiSaving(false);
-    }
-  }
-
-
-  async function handleResetAiModel() {
-    setAiError("");
-    setAiSuccess("");
-
-    try {
-      setAiSaving(true);
-
-      const data = await resetAIModelSetting();
-
-      setAiSetting(data);
-      setSelectedModel(data.active_model);
-      setAiSuccess("Dikembalikan ke model default dari .env.");
-    } catch (err) {
-      console.error("RESET AI MODEL SETTING ERROR:", err);
-      setAiError(err.message || "Gagal mengembalikan model AI ke default");
-    } finally {
-      setAiSaving(false);
+      setConfigSaving((prev) => ({ ...prev, [providerKey]: false }));
     }
   }
 
@@ -471,14 +448,17 @@ function AdminSettings() {
           )}
 
           {/* ============================================= */}
-          {/* TAB: AI (PROVIDER, MODEL OLLAMA, KONEKSI GEMINI) */}
+          {/* TAB: AI — GENERIK, MENGIKUTI DAFTAR PROVIDER    */}
+          {/* DARI BACKEND (backend/ai_providers.py). NAMBAH  */}
+          {/* PROVIDER BARU DI BACKEND OTOMATIS MUNCUL DI SINI */}
+          {/* TANPA UBAH KOMPONEN INI.                         */}
           {/* ============================================= */}
 
           {activeTab === "ai-model" && (
             <>
 
               {/* ============================================= */}
-              {/* KARTU 1: PROVIDER AI AKTIF                     */}
+              {/* KARTU: PROVIDER AI AKTIF                       */}
               {/* ============================================= */}
 
               <div
@@ -487,9 +467,8 @@ function AdminSettings() {
               >
                 <h2 style={{ marginTop: 0, marginBottom: 6 }}>Provider AI Aktif</h2>
                 <p style={{ marginTop: 0, marginBottom: 22, color: "#6b7280", fontSize: 13 }}>
-                  Pilih AI mana yang dipakai fitur "Generate Soal AI" di Bank Soal:
-                  Ollama (jalan lokal di laptop) atau Google Gemini (cloud, butuh
-                  API key). Guru hanya memakai satu provider yang aktif di sini.
+                  Pilih AI mana yang dipakai fitur "Generate Soal AI" di Bank Soal.
+                  Guru hanya memakai satu provider yang aktif di sini.
                 </p>
 
                 {providerLoading ? (
@@ -520,16 +499,12 @@ function AdminSettings() {
 
                     <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 22 }}>
 
-                      {[
-                        { value: "OLLAMA", label: "Ollama (lokal)", status: providers?.ollama },
-                        { value: "GEMINI", label: "Google Gemini (cloud)", status: providers?.gemini },
-                      ].map((option) => {
-                        const isChecked = providerChoice === option.value;
-                        const online = option.status?.online;
+                      {(providers?.providers || []).map((option) => {
+                        const isChecked = providerChoice === option.provider;
 
                         return (
                           <label
-                            key={option.value}
+                            key={option.provider}
                             style={{
                               display: "flex",
                               alignItems: "center",
@@ -544,15 +519,15 @@ function AdminSettings() {
                             <input
                               type="radio"
                               name="ai-provider-choice"
-                              value={option.value}
+                              value={option.provider}
                               checked={isChecked}
-                              onChange={() => setProviderChoice(option.value)}
+                              onChange={() => setProviderChoice(option.provider)}
                             />
 
                             <div style={{ flex: 1 }}>
                               <div style={{ fontWeight: 600, fontSize: 14 }}>
                                 {option.label}
-                                {providers?.active_provider === option.value && (
+                                {providers?.active_provider === option.provider && (
                                   <span
                                     style={{
                                       marginLeft: 8,
@@ -567,12 +542,12 @@ function AdminSettings() {
                               </div>
 
                               <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
-                                Model: <code>{option.status?.model || "-"}</code>
+                                Model: <code>{option.model || "-"}</code>
                               </div>
 
-                              {option.status?.detail && (
+                              {option.detail && (
                                 <div style={{ fontSize: 12, color: "#856404", marginTop: 2 }}>
-                                  {option.status.detail}
+                                  {option.detail}
                                 </div>
                               )}
                             </div>
@@ -584,11 +559,11 @@ function AdminSettings() {
                                 padding: "3px 9px",
                                 borderRadius: 999,
                                 whiteSpace: "nowrap",
-                                backgroundColor: online ? "#d4edda" : "#f8d7da",
-                                color: online ? "#155724" : "#721c24",
+                                backgroundColor: option.online ? "#d4edda" : "#f8d7da",
+                                color: option.online ? "#155724" : "#721c24",
                               }}
                             >
-                              {online ? "Online" : "Offline"}
+                              {option.online ? "Online" : "Offline"}
                             </span>
                           </label>
                         );
@@ -617,32 +592,44 @@ function AdminSettings() {
               </div>
 
               {/* ============================================= */}
-              {/* KARTU 2: MODEL OLLAMA                          */}
+              {/* KARTU KONFIGURASI — SATU KARTU PER PROVIDER    */}
+              {/* (di-render dari list, bukan hardcode per nama)  */}
               {/* ============================================= */}
 
-              <div
-                className="dashboard-card"
-                style={{ maxWidth: "700px", margin: "0 auto 20px", padding: "24px" }}
-              >
+              {!providerLoading && (providers?.providers || []).map((option, index) => {
+                const draft = configDrafts[option.provider] || { apiKey: "", model: "" };
+                const isSaving = !!configSaving[option.provider];
+                const errMsg = configError[option.provider];
+                const okMsg = configSuccess[option.provider];
+                const isLast = index === providers.providers.length - 1;
 
-                <h2 style={{ marginTop: 0, marginBottom: 6 }}>Model Ollama</h2>
-                <p style={{ marginTop: 0, marginBottom: 22, color: "#6b7280", fontSize: 13 }}>
-                  Model yang dipakai kalau provider aktif = Ollama. Ganti di sini
-                  langsung berlaku untuk generate berikutnya, tidak perlu edit file
-                  .env atau restart server.
-                </p>
+                return (
+                  <div
+                    key={option.provider}
+                    className="dashboard-card"
+                    style={{
+                      maxWidth: "700px",
+                      margin: isLast ? "0 auto" : "0 auto 20px",
+                      padding: "24px",
+                    }}
+                  >
+                    <h2 style={{ marginTop: 0, marginBottom: 6 }}>
+                      Konfigurasi {option.label}
+                    </h2>
 
-                {aiLoading ? (
-                  <p style={{ color: "#6b7280", fontSize: 13 }}>Memuat pengaturan...</p>
-                ) : (
-                  <>
-                    {aiError && (
+                    <p style={{ marginTop: 0, marginBottom: 22, color: "#6b7280", fontSize: 13 }}>
+                      {option.requires_api_key
+                        ? "API key disimpan di database, bukan di file .env — bisa diganti kapan saja dari sini tanpa perlu akses server."
+                        : "Provider ini berjalan lokal dan tidak memerlukan API key. Cukup atur nama model yang dipakai."}
+                    </p>
+
+                    {errMsg && (
                       <div className="error-message" style={{ marginBottom: 18 }}>
-                        {aiError}
+                        {errMsg}
                       </div>
                     )}
 
-                    {aiSuccess && (
+                    {okMsg && (
                       <div
                         className="alert-success"
                         style={{
@@ -654,11 +641,11 @@ function AdminSettings() {
                           marginBottom: "18px",
                         }}
                       >
-                        {aiSuccess}
+                        {okMsg}
                       </div>
                     )}
 
-                    {!aiSetting?.ollama_reachable && (
+                    {!option.online && option.detail && (
                       <div
                         style={{
                           backgroundColor: "#fff3cd",
@@ -669,185 +656,75 @@ function AdminSettings() {
                           marginBottom: "18px",
                         }}
                       >
-                        Ollama tidak terdeteksi berjalan di laptop ini. Daftar model
-                        tidak bisa dimuat otomatis — ketik nama model secara manual
-                        (pastikan sudah pernah di-pull lewat "ollama pull nama-model").
+                        {option.detail}
+                      </div>
+                    )}
+
+                    {option.requires_api_key && (
+                      <div className="form-group" style={{ marginBottom: 18 }}>
+                        <label>API Key</label>
+
+                        <input
+                          type="password"
+                          value={draft.apiKey}
+                          onChange={(e) => updateDraft(option.provider, "apiKey", e.target.value)}
+                          placeholder={
+                            option.masked_key
+                              ? `Tersimpan: ${option.masked_key} (isi untuk mengganti)`
+                              : "Tempel API key di sini"
+                          }
+                          autoComplete="off"
+                        />
+
+                        <small style={{ color: "#6b7280" }}>
+                          {option.configured
+                            ? "Sudah ada key tersimpan. Kosongkan kalau cuma mau ganti model, jangan ganti key."
+                            : "Belum ada API key tersimpan."}
+                        </small>
                       </div>
                     )}
 
                     <div className="form-group" style={{ marginBottom: 18 }}>
-                      <label>Model Aktif</label>
+                      <label>Model</label>
 
-                      {aiSetting?.ollama_reachable && aiSetting.installed_models.length > 0 ? (
-                        <select
-                          value={selectedModel}
-                          onChange={(e) => setSelectedModel(e.target.value)}
-                        >
-                          {!aiSetting.installed_models.includes(selectedModel) && (
-                            <option value={selectedModel}>{selectedModel}</option>
-                          )}
-
-                          {aiSetting.installed_models.map((modelName) => (
-                            <option key={modelName} value={modelName}>
-                              {modelName}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <input
-                          type="text"
-                          value={selectedModel}
-                          onChange={(e) => setSelectedModel(e.target.value)}
-                          placeholder="mis. qwen2.5:3b"
-                        />
-                      )}
+                      <input
+                        type="text"
+                        value={draft.model}
+                        onChange={(e) => updateDraft(option.provider, "model", e.target.value)}
+                        placeholder="mis. nama-model"
+                      />
                     </div>
-
-                    <p style={{ fontSize: 12, color: "#6b7280", marginTop: 0, marginBottom: 0 }}>
-                      Default dari .env: <code>{aiSetting?.default_model}</code>
-                      {aiSetting?.is_override && (
-                        <> &middot; sedang dioverride lewat Pengaturan ini</>
-                      )}
-                    </p>
 
                     <div
                       style={{
-                        marginTop: "26px",
                         display: "flex",
                         gap: 10,
                         justifyContent: "flex-end",
                       }}
                     >
-                      {aiSetting?.is_override && (
+                      {option.requires_api_key && option.configured && (
                         <button
                           type="button"
                           className="secondary-button"
-                          disabled={aiSaving}
-                          onClick={handleResetAiModel}
+                          disabled={isSaving}
+                          onClick={() => handleClearProviderConfig(option.provider)}
                         >
-                          Kembalikan ke Default
+                          Hapus API Key
                         </button>
                       )}
 
                       <button
                         type="button"
                         className="primary-button"
-                        disabled={aiSaving}
-                        onClick={handleSaveAiModel}
+                        disabled={isSaving}
+                        onClick={() => handleSaveProviderConfig(option.provider)}
                       >
-                        {aiSaving ? "Menyimpan..." : "Simpan Model Ollama"}
+                        {isSaving ? "Menyimpan..." : `Simpan ${option.label}`}
                       </button>
                     </div>
-                  </>
-                )}
-              </div>
-
-              {/* ============================================= */}
-              {/* KARTU 3: KONEKSI GEMINI                        */}
-              {/* ============================================= */}
-
-              <div
-                className="dashboard-card"
-                style={{ maxWidth: "700px", margin: "0 auto", padding: "24px" }}
-              >
-
-                <h2 style={{ marginTop: 0, marginBottom: 6 }}>Koneksi Gemini</h2>
-                <p style={{ marginTop: 0, marginBottom: 22, color: "#6b7280", fontSize: 13 }}>
-                  API key Gemini disimpan di database, bukan di file .env — bisa
-                  diganti kapan saja dari sini tanpa perlu akses server. Dapatkan
-                  API key gratis di{" "}
-                  <a
-                    href="https://aistudio.google.com/app/apikey"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Google AI Studio
-                  </a>.
-                </p>
-
-                {geminiError && (
-                  <div className="error-message" style={{ marginBottom: 18 }}>
-                    {geminiError}
                   </div>
-                )}
-
-                {geminiSuccess && (
-                  <div
-                    className="alert-success"
-                    style={{
-                      backgroundColor: "#d4edda",
-                      color: "#155724",
-                      padding: "10px",
-                      borderRadius: "6px",
-                      fontSize: "13px",
-                      marginBottom: "18px",
-                    }}
-                  >
-                    {geminiSuccess}
-                  </div>
-                )}
-
-                <div className="form-group" style={{ marginBottom: 18 }}>
-                  <label>API Key Gemini</label>
-
-                  <input
-                    type="password"
-                    value={geminiApiKeyInput}
-                    onChange={(e) => setGeminiApiKeyInput(e.target.value)}
-                    placeholder={
-                      providers?.gemini?.masked_key
-                        ? `Tersimpan: ${providers.gemini.masked_key} (isi untuk mengganti)`
-                        : "Tempel API key Gemini di sini (mis. AIzaSy...)"
-                    }
-                    autoComplete="off"
-                  />
-
-                  <small style={{ color: "#6b7280" }}>
-                    {providers?.gemini?.configured
-                      ? "Sudah ada key tersimpan. Kosongkan kalau cuma mau ganti model, jangan ganti key."
-                      : "Belum ada API key tersimpan."}
-                  </small>
-                </div>
-
-                <div className="form-group" style={{ marginBottom: 18 }}>
-                  <label>Model Gemini</label>
-
-                  <input
-                    type="text"
-                    value={geminiModelInput}
-                    onChange={(e) => setGeminiModelInput(e.target.value)}
-                    placeholder="mis. gemini-2.5-flash"
-                  />
-                </div>
-
-                <div
-                  style={{
-                    display: "flex",
-                    gap: 10,
-                    justifyContent: "flex-end",
-                  }}
-                >
-                  {providers?.gemini?.configured && (
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      disabled={geminiSaving}
-                      onClick={handleClearGemini}
-                    >
-                      Hapus API Key
-                    </button>
-                  )}
-
-                  <button
-                    type="button"
-                    className="primary-button"
-                    disabled={geminiSaving}
-                    onClick={handleSaveGemini}
-                  >
-                    {geminiSaving ? "Menyimpan..." : "Simpan Koneksi Gemini"}
-                  </button>
-                </div>
-              </div>
+                );
+              })}
 
             </>
           )}

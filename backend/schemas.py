@@ -182,39 +182,20 @@ class AIQuestionGenerateResponse(BaseModel):
 
 
 # ==========================================
-# PENGATURAN MODEL AI (OLLAMA)
+# MULTI-PROVIDER AI — GENERIK (Ollama, Gemini, dst)
 #
-# Dipakai halaman Admin Settings supaya admin bisa ganti model
-# Ollama yang aktif dari UI, tanpa perlu edit .env / restart
-# server secara manual.
-# ==========================================
-
-class AIModelSettingResponse(BaseModel):
-    active_model: str
-    default_model: str
-    is_override: bool
-    installed_models: list[str] = Field(default_factory=list)
-    ollama_reachable: bool
-
-
-class AIModelSettingUpdate(BaseModel):
-    model: str = Field(min_length=1)
-
-
-# ==========================================
-# MULTI-PROVIDER AI (OLLAMA + GEMINI)
-#
-# Dipakai halaman Admin Settings supaya admin bisa menambah
-# koneksi ke Gemini, mengganti API key kapan saja lewat UI (BUKAN
-# hardcode di .env), dan memilih provider mana yang aktif dipakai
-# fitur "Generate Soal AI". Dipakai juga oleh frontend untuk cek
-# status sebelum modal generate dibuka (trap error di awal kalau
-# tidak ada satupun provider yang online).
+# Dipakai halaman Admin Settings & endpoint status AI. Struktur ini
+# SENGAJA dibuat generik (list provider, bukan field terpisah per
+# nama) supaya menambah provider baru (mis. OpenAI, Claude API,
+# DeepSeek) TIDAK perlu mengubah schema ini — cukup daftarkan
+# provider barunya di backend/ai_providers.py, provider baru itu
+# otomatis muncul di response ini.
 # ==========================================
 
 class ProviderStatus(BaseModel):
-    provider: str  # "OLLAMA" | "GEMINI"
+    provider: str  # ID unik provider, mis. "OLLAMA", "GEMINI"
     label: str
+    requires_api_key: bool
     configured: bool
     online: bool
     model: str
@@ -224,17 +205,16 @@ class ProviderStatus(BaseModel):
 
 class AIProvidersResponse(BaseModel):
     active_provider: str
-    ollama: ProviderStatus
-    gemini: ProviderStatus
+    providers: list[ProviderStatus] = Field(default_factory=list)
 
 
 class AIProviderUpdate(BaseModel):
     provider: str = Field(min_length=1)
 
 
-class GeminiSettingUpdate(BaseModel):
-    # None/tidak dikirim -> tidak diubah (biarkan key/model lama).
-    # String kosong "" untuk api_key -> sengaja dikosongkan/dihapus.
+class ProviderConfigUpdate(BaseModel):
+    # None/tidak dikirim -> field tidak diubah (biarkan nilai lama).
+    # String kosong "" -> sengaja dikosongkan/dihapus.
     api_key: str | None = None
     model: str | None = None
 

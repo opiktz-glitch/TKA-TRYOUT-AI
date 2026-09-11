@@ -1,17 +1,10 @@
 import json
 import random
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from config import OLLAMA_BASE_URL, GEMINI_BASE_URL
-from routers.settings import (
-    get_active_ollama_model,
-    get_active_provider,
-    get_gemini_api_key,
-    get_active_gemini_model,
-)
+import ai_providers
 from database import get_db
 from models import (
     Question,
@@ -324,248 +317,10 @@ Jawab HANYA dengan JSON valid, tanpa teks lain, tanpa markdown, dengan format pe
 }}"""
 
 
-async def call_ollama(prompt: str, model: str) -> dict:
-
-    payload = {
-        "model": model,
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
-        "format": "json",
-        "stream": False,
-        # Ollama otomatis melepas model dari memori setelah idle
-        # (default 5 menit). Kalau itu terjadi, request berikutnya
-        # harus load ulang model dari disk dulu sebelum bisa mulai
-        # generate — ini sering jadi penyebab "kadang cepat, kadang
-        # lambat banget" yang tidak konsisten. keep_alive membuat
-        # model tetap di memori lebih lama supaya generate berikutnya
-        # langsung mulai tanpa nunggu load ulang.
-        "keep_alive": "30m",
-        "options": {
-            # Batas keras jumlah token yang boleh di-generate. Prompt
-            # cuma "meminta" ringkas, tapi model tetap bisa menulis
-            # lebih panjang dari itu. num_predict memaksa Ollama
-            # berhenti setelah token ini habis, apa pun isinya —
-            # soal + 5 opsi + penjelasan singkat harusnya cukup
-            # dengan batas ini, jadi waktu generate jadi jauh lebih
-            # terprediksi dan tidak bisa "kabur" jadi sangat lama.
-            "num_predict": 600,
-            # Prompt kita pendek dan outputnya dibatasi 600 token,
-            # jadi context sebesar itu tidak perlu. Tanpa ini, Ollama
-            # bisa pakai context window default yang jauh lebih besar
-            # dari kebutuhan sebenarnya, yang berarti alokasi memori
-            # & komputasi ekstra yang sia-sia (terutama kalau jalan
-            # di CPU tanpa GPU).
-            "num_ctx": 2048,
-        },
-    }
-
-    try:
-
-        async with httpx.AsyncClient(timeout=120.0) as client:
-
-            response = await client.post(
-                f"{OLLAMA_BASE_URL}/api/chat",
-                json=payload
-            )
-
-        response.raise_for_status()
-
-    except httpx.ConnectError:
-
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                f"Tidak dapat terhubung ke Ollama di {OLLAMA_BASE_URL}. "
-                "Pastikan Ollama sudah berjalan di laptop Anda (buka "
-                "aplikasi Ollama atau jalankan 'ollama serve'), dan "
-                f"model '{model}' sudah di-pull "
-                f"('ollama pull {model}')."
-            )
-        )
-
-    except httpx.TimeoutException:
-
-        raise HTTPException(
-            status_code=504,
-            detail=(
-                "AI terlalu lama merespons (lebih dari 2 menit). "
-                "Coba lagi, atau gunakan model Ollama yang lebih ringan."
-            )
-        )
-
-    except httpx.HTTPStatusError as exc:
-
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                "Ollama mengembalikan error: "
-                + exc.response.text[:200]
-            )
-        )
-
-    data = response.json()
-
-    content = data.get("message", {}).get("content", "")
-
-    try:
-
-        parsed = json.loads(content)
-
-    except (json.JSONDecodeError, TypeError):
-
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                "Hasil AI tidak berupa JSON yang valid. "
-                "Coba generate ulang."
-            )
-        )
-
-    return parsed
-
-
-async def call_gemini(prompt: str, api_key: str, model: str) -> dict:
-    """
-    Sama seperti call_ollama, tapi memanggil Google Gemini API.
-    Dipakai kalau provider AI aktif = GEMINI (dipilih admin di
-    Pengaturan). API key diambil dari database (t_app_setting),
-    bukan dari .env, supaya admin bisa gonta-ganti key kapan saja
-    tanpa restart server.
-    """
-
-    payload = {
-        "contents": [
-            {"parts": [{"text": prompt}]}
-        ],
-        "generationConfig": {
-            "responseMimeType": "application/json",
-            # Setara dengan num_predict di Ollama — batas token
-            # keluaran supaya soal + 5 opsi + pembahasan singkat
-            # tetap ringkas & waktu respons terprediksi.
-            "maxOutputTokens": 800,
-        },
-    }
-
-    try:
-
-        async with httpx.AsyncClient(timeout=60.0) as client:
-
-            response = await client.post(
-                f"{GEMINI_BASE_URL}/models/{model}:generateContent",
-                params={"key": api_key},
-                json=payload,
-            )
-
-        response.raise_for_status()
-
-    except httpx.ConnectError:
-
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Tidak dapat terhubung ke Gemini. Periksa koneksi internet "
-                "server, atau hubungi admin untuk memeriksa Pengaturan AI."
-            )
-        )
-
-    except httpx.TimeoutException:
-
-        raise HTTPException(
-            status_code=504,
-            detail="Gemini terlalu lama merespons. Coba lagi beberapa saat lagi."
-        )
-
-    except httpx.HTTPStatusError as exc:
-
-        if exc.response.status_code in (400, 401, 403):
-
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    "Gemini menolak permintaan (API key tidak valid/expired "
-                    "atau kuota habis). Hubungi admin untuk memeriksa API key "
-                    "Gemini di halaman Pengaturan."
-                )
-            )
-
-        raise HTTPException(
-            status_code=502,
-            detail="Gemini mengembalikan error: " + exc.response.text[:200]
-        )
-
-    data = response.json()
-
-    candidates = data.get("candidates") or []
-
-    if not candidates:
-
-        # Bisa terjadi kalau konten diblokir filter keamanan Gemini
-        # (finishReason "SAFETY") — guru perlu diberi tahu supaya
-        # tidak bingung kenapa hasilnya kosong.
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                "Gemini tidak menghasilkan jawaban (kemungkinan konten "
-                "ditolak filter keamanan). Coba ubah materi/instruksi lalu "
-                "generate ulang."
-            )
-        )
-
-    parts = candidates[0].get("content", {}).get("parts", [])
-
-    content = "".join(
-        part.get("text", "") for part in parts if isinstance(part, dict)
-    )
-
-    try:
-
-        parsed = json.loads(content)
-
-    except (json.JSONDecodeError, TypeError):
-
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                "Hasil AI tidak berupa JSON yang valid. "
-                "Coba generate ulang."
-            )
-        )
-
-    return parsed
-
-
-async def call_ai(prompt: str, db: Session) -> dict:
-    """
-    Dispatcher: arahkan pemanggilan ke provider AI yang sedang
-    aktif (diatur admin lewat halaman Pengaturan > Model AI).
-    Baik endpoint preview maupun generate memakai fungsi ini
-    supaya logika pemilihan provider hanya ada di satu tempat.
-    """
-
-    active_provider = get_active_provider(db)
-
-    if active_provider == "GEMINI":
-
-        api_key = get_gemini_api_key(db)
-
-        if not api_key:
-
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "API key Gemini belum diatur. Hubungi admin untuk "
-                    "mengisinya di halaman Pengaturan > Model AI."
-                )
-            )
-
-        model = get_active_gemini_model(db)
-
-        return await call_gemini(prompt, api_key, model)
-
-    active_model = get_active_ollama_model(db)
-
-    return await call_ollama(prompt, active_model)
+# Pemanggilan AI (Ollama/Gemini/dst) sekarang generik lewat
+# ai_providers.call_active_provider() — lihat backend/ai_providers.py.
+# Router ini tidak perlu tahu provider mana yang aktif atau
+# bagaimana cara memanggilnya.
 
 
 @router.post(
@@ -699,7 +454,7 @@ async def generate_question_ai(
             additional_instruction=request_data.additional_instruction,
         )
 
-    ai_result = await call_ai(prompt, db)
+    ai_result = await ai_providers.call_active_provider(prompt, db)
 
     # -----------------------------------------------------
     # Validasi bentuk hasil AI. Guru tetap akan memeriksa &

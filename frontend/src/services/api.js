@@ -285,39 +285,25 @@ export async function generateAIQuestion(payload) {
 }
 
 
-// Pengaturan model Ollama yang aktif. Disimpan di database lewat
-// halaman Admin Settings, jadi admin tidak perlu edit file .env
-// atau restart server manual tiap kali mau ganti model AI.
-export async function getAIModelSetting() {
-  return apiFetch("/api/settings/ai-model");
-}
-
-export async function updateAIModelSetting(model) {
-  return apiFetch("/api/settings/ai-model", {
-    method: "PUT",
-    body: { model },
-  });
-}
-
-export async function resetAIModelSetting() {
-  return apiFetch("/api/settings/ai-model", {
-    method: "DELETE",
-  });
-}
-
-
 // =====================================================
-// MULTI-PROVIDER AI (OLLAMA + GEMINI)
+// MULTI-PROVIDER AI — GENERIK (Ollama, Gemini, dst)
 //
-// Gemini adalah provider AI kedua selain Ollama. API key & model
-// Gemini disimpan di database lewat endpoint ini (BUKAN hardcode
-// di .env), jadi admin bisa ganti-ganti key kapan saja dari
-// halaman Pengaturan. getAIStatus() dipakai untuk cek cepat
-// SEBELUM membuka modal "Tambah Soal AI" — kalau tidak ada
-// satupun provider yang online, error langsung ditampilkan saat
-// tombol diklik, tanpa perlu isi form dulu.
+// Semua fungsi di bawah ini SENGAJA tidak menyebut nama provider
+// tertentu di endpoint-nya (kecuali sebagai parameter) — backend
+// membaca daftar provider dari registry (backend/ai_providers.py),
+// jadi kalau admin/dev menambah provider AI baru di backend, UI
+// Pengaturan otomatis bisa mengaturnya lewat fungsi generik yang
+// sama ini, tanpa perlu fungsi baru di sini.
+//
+// getAIStatus() dipakai untuk cek cepat SEBELUM membuka modal
+// "Tambah Soal AI" — kalau tidak ada satupun provider yang online,
+// error langsung ditampilkan saat tombol diklik, tanpa perlu isi
+// form dulu.
 // =====================================================
 
+// -> { active_provider: "OLLAMA", providers: [ { provider, label,
+//      requires_api_key, configured, online, model, detail,
+//      masked_key }, ... ] }
 export async function getAIProviders() {
   return apiFetch("/api/settings/ai-providers");
 }
@@ -329,7 +315,10 @@ export async function updateActiveProvider(provider) {
   });
 }
 
-export async function updateGeminiSetting({ apiKey, model } = {}) {
+// Simpan/ganti API key & model milik SATU provider (bekerja untuk
+// provider mana pun, bukan cuma Gemini — cukup kirim providerKey
+// yang sesuai, mis. "GEMINI", "OLLAMA", atau provider baru lainnya).
+export async function updateProviderConfig(providerKey, { apiKey, model } = {}) {
   const body = {};
 
   // undefined -> field tidak dikirim sama sekali -> backend tidak
@@ -343,14 +332,14 @@ export async function updateGeminiSetting({ apiKey, model } = {}) {
     body.model = model;
   }
 
-  return apiFetch("/api/settings/gemini", {
+  return apiFetch(`/api/settings/providers/${providerKey}/config`, {
     method: "PUT",
     body,
   });
 }
 
-export async function clearGeminiSetting() {
-  return apiFetch("/api/settings/gemini", {
+export async function clearProviderConfig(providerKey) {
+  return apiFetch(`/api/settings/providers/${providerKey}/config`, {
     method: "DELETE",
   });
 }
