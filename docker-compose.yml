@@ -1,0 +1,32 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: tka_tryout_backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    volumes:
+      # Persist database SQLite di luar container supaya tidak
+      # hilang saat container di-rebuild/redeploy. Path di dalam
+      # container mengikuti backend/database/ (lihat config.py).
+      - db_data:/app/database
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Ganti sesuai domain backend production kalau deploy ke server,
+        # untuk lokal/testing docker-compose ini sudah cukup.
+        VITE_API_URL: http://localhost:8000
+    container_name: tka_tryout_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
+
+volumes:
+  db_data:
