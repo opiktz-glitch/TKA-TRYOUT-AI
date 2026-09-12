@@ -53,11 +53,11 @@ def validate_tryout_data(data):
 
     if (
         data.difficulty is not None
-        and data.difficulty not in ALLOWED_DIFFICULTIES
+        and len(data.difficulty.strip()) > 150
     ):
         raise HTTPException(
             status_code=400,
-            detail="Difficulty harus EASY, MEDIUM, atau HARD"
+            detail="Keterangan maksimal 150 karakter"
         )
 
     question_ids = set()
@@ -342,7 +342,7 @@ def create_tryout(
         duration_minutes=data.duration_minutes,
         total_questions=len(data.questions),
         max_score=data.max_score,
-        difficulty=data.difficulty,
+        difficulty=(data.difficulty.strip() if data.difficulty else None),
         created_by=current_user.id,
         is_active=data.is_active
     )
@@ -482,7 +482,7 @@ def update_tryout(
     tryout.duration_minutes = data.duration_minutes
     tryout.total_questions = len(data.questions)
     tryout.max_score = data.max_score
-    tryout.difficulty = data.difficulty
+    tryout.difficulty = data.difficulty.strip() if data.difficulty else None
     tryout.is_active = data.is_active
 
     # -----------------------------------------------------

@@ -75,6 +75,25 @@ function QuestionManagement() {
   const [aiUnavailableMessage, setAiUnavailableMessage] =
     useState("");
 
+  // Tombol "Edit dengan AI" di dalam modal Edit Soal punya alur
+  // status/loading terpisah dari tombol "Tambah Soal AI" di
+  // toolbar, supaya pesan error tidak "salah tempat" (tombol Edit
+  // AI ada di dalam modal, bukan di toolbar Bank Soal).
+  const [editAiChecking, setEditAiChecking] =
+    useState(false);
+
+  const [editAiUnavailableMessage, setEditAiUnavailableMessage] =
+    useState("");
+
+  // true kalau modal AI sedang dibuka untuk MENGGANTIKAN soal yang
+  // sedang diedit (bukan membuat soal baru). Dipakai supaya:
+  // - editingQuestion TIDAK di-null-kan setelah generate (submit
+  //   berikutnya harus tetap UPDATE, bukan CREATE baru)
+  // - kalau modal AI dibatalkan, modal Edit Soal dibuka lagi
+  //   dengan data yang sudah ada, bukan hilang begitu saja
+  const [aiReplaceMode, setAiReplaceMode] =
+    useState(false);
+
   const [aiGenerating, setAiGenerating] =
     useState(false);
 
@@ -282,6 +301,7 @@ function QuestionManagement() {
     setFormError("");
     setFormSuccess("");
     setAiGeneratedNotice(false);
+    setEditAiUnavailableMessage("");
 
     setShowModal(true);
   }
@@ -348,6 +368,7 @@ function QuestionManagement() {
     setFormError("");
     setFormSuccess("");
     setAiGeneratedNotice(false);
+    setEditAiUnavailableMessage("");
 
     setShowModal(true);
   }
@@ -372,6 +393,7 @@ function QuestionManagement() {
     setFormError("");
     setFormSuccess("");
     setAiGeneratedNotice(false);
+    setEditAiUnavailableMessage("");
   }
 
 
@@ -381,6 +403,12 @@ function QuestionManagement() {
 
   function openAiModal() {
 
+    // Mode TAMBAH: pastikan tidak "menempel" ke soal manapun,
+    // supaya hasil generate nanti disimpan sebagai soal BARU.
+    setEditingQuestion(null);
+
+    setAiReplaceMode(false);
+
     setAiForm(createEmptyAiForm());
 
     setAiError("");
@@ -388,6 +416,50 @@ function QuestionManagement() {
     setAiStep("form");
 
     setAiPrompt("");
+
+    setShowAiModal(true);
+  }
+
+
+  // ======================================================
+  // TOMBOL "EDIT DENGAN AI" DI DALAM MODAL EDIT SOAL
+  //
+  // Membuka modal generate AI yang SAMA, tapi:
+  // - subject_id & difficulty diisi otomatis dari soal yang
+  //   sedang diedit (guru tidak perlu pilih ulang)
+  // - additional_instruction diisi draft yang menyebutkan soal
+  //   lama, supaya AI tahu ini permintaan PENGGANTI, bukan soal
+  //   yang tidak berhubungan sama sekali
+  // - editingQuestion TETAP tersimpan (lihat aiReplaceMode) supaya
+  //   setelah draft AI dipakai, tombol "Simpan Perubahan" di modal
+  //   Edit Soal meng-UPDATE soal ini, bukan membuat soal baru
+  // ======================================================
+
+  function openAiModalForEdit() {
+
+    setAiReplaceMode(true);
+
+    setAiForm({
+      subject_id: form.subject_id,
+      difficulty: form.difficulty,
+      materi: "",
+      additional_instruction: form.question_text
+        ? `Buatkan soal PENGGANTI untuk soal lama berikut (topik ` +
+          `boleh sejenis, tapi teks soal & pilihan jawaban harus ` +
+          `beda, jangan cuma menyalin ulang):\n"${form.question_text}"`
+        : "",
+    });
+
+    setAiError("");
+
+    setAiStep("form");
+
+    setAiPrompt("");
+
+    // Modal Edit Soal disembunyikan dulu (bukan ditutup total —
+    // form & editingQuestion tetap tersimpan di state) supaya
+    // modal AI tidak bertumpuk di atasnya.
+    setShowModal(false);
 
     setShowAiModal(true);
   }
@@ -458,6 +530,67 @@ function QuestionManagement() {
     setAiStep("form");
 
     setAiPrompt("");
+
+    // Kalau modal AI ini dibuka dari tombol "Edit dengan AI" dan
+    // dibatalkan (bukan berhasil generate), buka lagi modal Edit
+    // Soal supaya guru tidak kehilangan soal yang sedang diedit.
+    if (aiReplaceMode) {
+
+      setAiReplaceMode(false);
+
+      setShowModal(true);
+    }
+  }
+
+
+  // ======================================================
+  // TOMBOL "EDIT DENGAN AI" DIKLIK (di dalam modal Edit Soal)
+  //
+  // Sama seperti handleAiButtonClick, cek dulu status provider AI
+  // sebelum modal generate dibuka. Kalau tidak ada AI yang online,
+  // error ditampilkan DI DALAM modal Edit Soal (modal tidak jadi
+  // disembunyikan), supaya guru tidak kehilangan perubahan manual
+  // yang sudah diketik.
+  // ======================================================
+
+  async function handleEditAiButtonClick() {
+
+    setEditAiUnavailableMessage("");
+
+    try {
+
+      setEditAiChecking(true);
+
+      const status = await getAIStatus();
+
+      if (!status.online) {
+
+        setEditAiUnavailableMessage(
+          status.reason ||
+          "Tidak ada AI yang online saat ini. Coba lagi nanti atau hubungi admin."
+        );
+
+        return;
+      }
+
+      openAiModalForEdit();
+
+    } catch (err) {
+
+      console.error(
+        "CHECK AI STATUS (EDIT) ERROR:",
+        err
+      );
+
+      setEditAiUnavailableMessage(
+        err.message ||
+        "Gagal memeriksa status AI. Coba lagi nanti."
+      );
+
+    } finally {
+
+      setEditAiChecking(false);
+    }
   }
 
 
@@ -602,9 +735,14 @@ function QuestionManagement() {
         prompt: aiPrompt.trim(),
       });
 
-      setEditingQuestion(null);
+      // CATATAN: editingQuestion SENGAJA tidak di-null-kan di sini.
+      // Kalau modal ini dibuka lewat "Edit dengan AI"
+      // (aiReplaceMode = true), editingQuestion masih menunjuk ke
+      // soal lama, supaya tombol "Simpan Perubahan" nanti meng-
+      // UPDATE soal itu. Untuk mode Tambah, editingQuestion sudah
+      // di-null-kan lebih dulu di openAiModal().
 
-      setForm({
+      setForm(prev => ({
         subject_id: String(result.subject_id),
 
         question_text: result.question_text,
@@ -616,9 +754,12 @@ function QuestionManagement() {
 
         explanation: result.explanation || "",
 
-        points: result.points ?? 1,
+        // Mode ganti soal (edit): pertahankan poin & status aktif
+        // soal LAMA, karena itu bukan sesuatu yang AI tentukan.
+        // Mode tambah baru: pakai default dari hasil AI / 1.
+        points: aiReplaceMode ? prev.points : (result.points ?? 1),
 
-        is_active: true,
+        is_active: aiReplaceMode ? prev.is_active : true,
 
         options: OPTION_CODES.map(code => {
 
@@ -634,7 +775,7 @@ function QuestionManagement() {
             is_correct: found?.is_correct || false,
           };
         }),
-      });
+      }));
 
       setFormError("");
       setFormSuccess("");
@@ -643,6 +784,7 @@ function QuestionManagement() {
       setShowAiModal(false);
       setAiStep("form");
       setAiPrompt("");
+      setAiReplaceMode(false);
       setShowModal(true);
 
     } catch (err) {
@@ -1314,6 +1456,7 @@ function QuestionManagement() {
 
                     <tr>
 
+                      <th className="align-center">No</th>
                       <th className="align-center">ID</th>
                       <th className="align-center">Mata Pelajaran</th>
                       <th className="align-left">Pertanyaan</th>
@@ -1330,13 +1473,17 @@ function QuestionManagement() {
                   <tbody>
 
                     {filteredQuestions.map(
-                      question => (
+                      (question, index) => (
 
                         <tr
                           key={
                             question.id
                           }
                         >
+
+                          <td className="align-center">
+                            {index + 1}
+                          </td>
 
                           <td className="align-center">
                             {question.id}
@@ -1517,6 +1664,56 @@ function QuestionManagement() {
               </button>
 
             </div>
+
+
+            {editingQuestion && (
+
+              <div
+                style={{
+                  padding: "0 24px",
+                  marginTop: "16px",
+                }}
+              >
+
+                {editAiUnavailableMessage && (
+
+                  <div
+                    className="form-error-message"
+                    style={{ marginBottom: "10px" }}
+                  >
+                    {editAiUnavailableMessage}
+                  </div>
+
+                )}
+
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={handleEditAiButtonClick}
+                  disabled={editAiChecking || saving}
+                >
+                  {editAiChecking
+                    ? "Mengecek AI..."
+                    : "✨ Edit dengan AI"
+                  }
+                </button>
+
+                <p
+                  style={{
+                    fontSize: "12px",
+                    color: "#6b7280",
+                    marginTop: "8px",
+                    marginBottom: "0",
+                  }}
+                >
+                  AI akan membuatkan draft soal pengganti untuk soal
+                  ini. Draft akan mengisi form di bawah — Anda tetap
+                  bisa edit manual sebelum menekan "Simpan Perubahan".
+                </p>
+
+              </div>
+
+            )}
 
 
             <form
@@ -1881,7 +2078,7 @@ function QuestionManagement() {
 
 
       {/* ============================================
-          MODAL GENERATE SOAL AI (OLLAMA)
+          MODAL GENERATE SOAL AI (TAMBAH / GANTI SOAL)
           ============================================ */}
 
       {showAiModal && (
@@ -1895,12 +2092,15 @@ function QuestionManagement() {
               <div>
 
                 <h2>
-                  ✨ Tambah Soal dengan AI
+                  {aiReplaceMode
+                    ? "✨ Ganti Soal dengan AI"
+                    : "✨ Tambah Soal dengan AI"
+                  }
                 </h2>
 
                 <p>
                   {aiStep === "form"
-                    ? "Diproses oleh Ollama yang berjalan di laptop Anda. Prompt akan ditampilkan dulu sebelum soal benar-benar dibuat."
+                    ? "Prompt akan ditampilkan dulu untuk diperiksa sebelum soal benar-benar dibuat oleh AI."
                     : "Periksa dan edit prompt di bawah ini kalau perlu, lalu tekan \"Generate Soal\"."
                   }
                 </p>

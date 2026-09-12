@@ -1,5 +1,33 @@
-//const API_URL = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// =====================================================
+// API BASE URL — AUTO-DETECT UNTUK AKSES LEWAT WIFI/LAN
+//
+// Kalau VITE_API_URL diisi manual di .env, itu yang dipakai
+// (prioritas tertinggi, dipakai saat deploy ke domain asli).
+//
+// Kalau TIDAK diisi, base URL diturunkan dari alamat yang
+// dipakai browser membuka halaman ini (window.location.hostname):
+//   - Dibuka lewat http://localhost:5173      -> API di localhost:8000
+//   - Dibuka lewat http://192.168.1.5:5173    -> API di 192.168.1.5:8000
+//
+// Ini penting untuk akses dari laptop LAIN di WiFi yang sama:
+// kalau di-hardcode ke "localhost:8000", laptop lain akan mencoba
+// menghubungi backend di LAPTOP MEREKA SENDIRI (yang tidak ada),
+// bukan ke laptop admin. Dengan window.location.hostname, request
+// otomatis diarahkan ke IP yang sama dengan yang dipakai membuka
+// frontend-nya, jadi admin tidak perlu mengubah kode/.env setiap
+// kali pindah jaringan WiFi.
+function resolveApiBaseUrl() {
+
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+
+  const { protocol, hostname } = window.location;
+
+  return `${protocol}//${hostname}:8000`;
+}
+
+const API_BASE_URL = resolveApiBaseUrl();
 
 
 // =====================================================
@@ -622,4 +650,42 @@ export async function submitStudentAttempt(attemptId) {
 
 export async function getSystemStatus() {
   return apiFetch("/api/system/status");
+}
+
+
+// =========================================================
+// PENGATURAN > JARINGAN — IP untuk akses dari laptop lain
+// lewat WiFi/LAN yang sama.
+// =========================================================
+
+export async function getNetworkInfo() {
+  return apiFetch("/api/system/network-info");
+}
+
+
+// =========================================================
+// PENGATURAN > KEAMANAN — SECRET_KEY (JWT)
+//
+// SECRET_KEY dipakai untuk menandatangani token login SEMUA
+// user. Menyimpan/merotasinya membuat SEMUA sesi login yang
+// sedang aktif (termasuk admin yang melakukan aksi ini) langsung
+// tidak valid — halaman AdminSettings.jsx bertanggung jawab
+// logout otomatis begitu menerima force_logout: true di response.
+// =========================================================
+
+export async function getSecretKeyStatus() {
+  return apiFetch("/api/settings/secret-key");
+}
+
+export async function updateSecretKey(newSecretKey) {
+  return apiFetch("/api/settings/secret-key", {
+    method: "PUT",
+    body: { new_secret_key: newSecretKey },
+  });
+}
+
+export async function rotateSecretKey() {
+  return apiFetch("/api/settings/secret-key/rotate", {
+    method: "POST",
+  });
 }

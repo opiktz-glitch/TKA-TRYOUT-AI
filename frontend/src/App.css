@@ -2097,31 +2097,42 @@ button {
 
 .question-bank-table th:nth-child(1),
 .question-bank-table td:nth-child(1) {
-  width: 56px;
+  width: 48px;
 }
 
 .question-bank-table th:nth-child(2),
 .question-bank-table td:nth-child(2) {
+  width: 56px;
+}
+
+.question-bank-table th:nth-child(3),
+.question-bank-table td:nth-child(3) {
   width: 130px;
 }
 
-.question-bank-table th:nth-child(4),
-.question-bank-table td:nth-child(4) {
-  width: 90px;
-}
+/* Kolom ke-4 (Pertanyaan) SENGAJA tidak diberi width di sini.
+   Dengan table-layout: fixed, kolom yang tidak diberi width
+   eksplisit otomatis menyerap SISA lebar tabel setelah kolom
+   lain (No, ID, Mata Pelajaran, Tingkat, Bobot, Status, Aksi)
+   dikurangi — jadi ini otomatis jadi kolom terlebar. */
 
 .question-bank-table th:nth-child(5),
 .question-bank-table td:nth-child(5) {
-  width: 70px;
+  width: 90px;
 }
 
 .question-bank-table th:nth-child(6),
 .question-bank-table td:nth-child(6) {
-  width: 90px;
+  width: 70px;
 }
 
 .question-bank-table th:nth-child(7),
 .question-bank-table td:nth-child(7) {
+  width: 90px;
+}
+
+.question-bank-table th:nth-child(8),
+.question-bank-table td:nth-child(8) {
   width: 100px;
 }
 

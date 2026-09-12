@@ -1,14 +1,155 @@
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
 from fastapi import HTTPException
 from jose import jwt
+from sqlalchemy.orm import Session
 
+import config
 from config import (
-    SECRET_KEY,
     ALGORITHM,
     ACCESS_TOKEN_EXPIRE_MINUTES
 )
+from models import AppSetting
+
+
+# ==========================================
+# SECRET_KEY DINAMIS (disimpan di database)
+#
+# SECRET_KEY dipakai untuk menandatangani JWT (login) DAN
+# menurunkan kunci enkripsi setting sensitif lain (lihat
+# ai_providers.py). Supaya admin bisa menggantinya kapan saja
+# dari halaman Pengaturan tanpa edit file .env / restart server,
+# nilai yang benar-benar dipakai runtime disimpan di tabel
+# t_app_setting, bukan dibaca sekali saat proses start seperti
+# konstanta biasa.
+#
+# KONSEKUENSI PENTING (disengaja, bukan bug):
+# Mengganti/merotasi SECRET_KEY membuat SEMUA token JWT yang
+# sudah terbit (siapa pun yang sedang login, termasuk admin yang
+# melakukan penggantian) langsung tidak valid lagi. Ini perilaku
+# yang benar untuk operasi keamanan seperti ini — bukan diam-diam
+# dibiarkan lolos.
+# ==========================================
+
+SECRET_KEY_SETTING_KEY = "auth:secret_key"
+SECRET_KEY_CHANGED_BY_SETTING_KEY = "auth:secret_key:changed_by"
+
+MIN_SECRET_KEY_LENGTH = 32
+
+
+def generate_secret_key() -> str:
+    """Key acak yang aman secara kriptografis untuk tombol 'Rotasi'."""
+    return secrets.token_urlsafe(64)
+
+
+def get_active_secret_key(db: Session) -> str:
+    """
+    Mengambil SECRET_KEY yang SEDANG aktif dipakai aplikasi.
+
+    Urutan prioritas:
+    1. Nilai tersimpan di t_app_setting (sumber kebenaran utama
+       setelah bootstrap_secret_key() pernah berjalan).
+    2. Fallback ke config.SECRET_KEY (.env) — seharusnya cuma
+       kepakai sesaat sebelum bootstrap sempat jalan.
+    """
+
+    setting = (
+        db.query(AppSetting)
+        .filter(AppSetting.key == SECRET_KEY_SETTING_KEY)
+        .first()
+    )
+
+    if setting and setting.value.strip():
+        return setting.value.strip()
+
+    if config.SECRET_KEY:
+        return config.SECRET_KEY
+
+    raise RuntimeError(
+        "SECRET_KEY belum tersedia sama sekali (bootstrap belum "
+        "berjalan). Ini seharusnya tidak terjadi — restart server."
+    )
+
+
+def bootstrap_secret_key(db: Session) -> None:
+    """
+    Dipanggil SEKALI saat aplikasi start (lihat main.py) untuk
+    memastikan selalu ada SECRET_KEY tersimpan di database, supaya
+    instalasi baru tidak wajib mengisi .env sama sekali.
+
+    - Sudah ada di database -> tidak melakukan apa-apa (nilai di
+      .env, kalau ada, diabaikan sepenuhnya).
+    - Belum ada tapi .env berisi SECRET_KEY -> dipindahkan
+      (migrasi) apa adanya ke database, supaya upgrade dari versi
+      lama tidak mendadak membuat semua akun ter-logout.
+    - Keduanya kosong (instalasi baru) -> generate key acak baru.
+    """
+
+    setting = (
+        db.query(AppSetting)
+        .filter(AppSetting.key == SECRET_KEY_SETTING_KEY)
+        .first()
+    )
+
+    if setting and setting.value.strip():
+        return
+
+    value = config.SECRET_KEY or generate_secret_key()
+
+    if setting:
+        setting.value = value
+    else:
+        db.add(AppSetting(key=SECRET_KEY_SETTING_KEY, value=value))
+
+    db.commit()
+
+
+def set_secret_key(
+    db: Session,
+    new_value: str,
+    changed_by: str | None = None,
+) -> None:
+    """
+    Mengganti SECRET_KEY aktif (dipakai endpoint 'Simpan' & 'Rotasi'
+    di Pengaturan > Keamanan). Menyimpan juga siapa & kapan terakhir
+    diganti untuk ditampilkan di UI (kapan diambil dari
+    AppSetting.updated_at, otomatis ter-update lewat onupdate).
+
+    Tidak melakukan commit — caller (endpoint) yang bertanggung
+    jawab commit, supaya bisa digabung dalam satu transaksi kalau
+    perlu.
+    """
+
+    setting = (
+        db.query(AppSetting)
+        .filter(AppSetting.key == SECRET_KEY_SETTING_KEY)
+        .first()
+    )
+
+    if setting:
+        setting.value = new_value
+    else:
+        db.add(AppSetting(key=SECRET_KEY_SETTING_KEY, value=new_value))
+
+    changed_by_setting = (
+        db.query(AppSetting)
+        .filter(AppSetting.key == SECRET_KEY_CHANGED_BY_SETTING_KEY)
+        .first()
+    )
+
+    label = changed_by or "-"
+
+    if changed_by_setting:
+        changed_by_setting.value = label
+    else:
+        db.add(
+            AppSetting(
+                key=SECRET_KEY_CHANGED_BY_SETTING_KEY,
+                value=label,
+            )
+        )
 
 
 # ==========================================
@@ -88,8 +229,14 @@ def verify_password(
 
 def create_access_token(
     data: dict,
+    db: Session,
     expires_delta: timedelta | None = None
 ):
+    """
+    db WAJIB diisi karena SECRET_KEY sekarang dibaca dinamis dari
+    database (lihat get_active_secret_key()), bukan konstanta yang
+    di-load sekali saat proses start.
+    """
 
     to_encode = data.copy()
 
@@ -118,6 +265,6 @@ def create_access_token(
 
     return jwt.encode(
         to_encode,
-        SECRET_KEY,
+        get_active_secret_key(db),
         algorithm=ALGORITHM
     )

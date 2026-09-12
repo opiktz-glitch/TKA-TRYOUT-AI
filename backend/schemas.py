@@ -1,3 +1,4 @@
+from datetime import datetime
 from pydantic import BaseModel, Field 
 
 
@@ -225,6 +226,25 @@ class AIStatusResponse(BaseModel):
     reason: str | None = None
 
 
+# ==========================================
+# SECRET_KEY (Pengaturan > Keamanan)
+# ==========================================
+
+class SecretKeyStatusResponse(BaseModel):
+    is_configured: bool
+    masked_key: str | None = None
+    updated_at: datetime | None = None
+    changed_by: str | None = None
+
+
+class SecretKeyUpdateRequest(BaseModel):
+    new_secret_key: str = Field(min_length=1)
+
+
+class SecretKeyActionResponse(BaseModel):
+    success: bool
+    message: str
+
 class QuestionResponse(BaseModel):
     id: int
     subject_id: int
@@ -424,3 +444,36 @@ class StudentProfileUpdate(BaseModel):
 class MyProfileUpdate(BaseModel):
 
     full_name: str = Field(min_length=1, max_length=150)
+
+
+# ==========================================
+# JARINGAN LOKAL (Pengaturan > Jaringan)
+#
+# Dipakai untuk menampilkan IP address laptop admin di jaringan
+# WiFi/LAN yang sedang aktif, supaya laptop/HP lain di jaringan
+# yang sama bisa mengakses aplikasi tanpa admin perlu mencari
+# tahu IP-nya manual lewat Command Prompt (ipconfig).
+# ==========================================
+
+class NetworkAddress(BaseModel):
+
+    interface: str
+
+    ip: str
+
+    frontend_url: str
+
+    backend_url: str
+
+
+class NetworkInfoResponse(BaseModel):
+
+    hostname: str
+
+    frontend_port: int
+
+    backend_port: int
+
+    addresses: list[NetworkAddress]
+
+    backend_online: bool = True

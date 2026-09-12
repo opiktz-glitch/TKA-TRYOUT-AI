@@ -323,8 +323,16 @@ class Tryout(Base):
         default=100
     )
 
+    # Awalnya field ini untuk tingkat kesulitan (EASY/MEDIUM/HARD),
+    # sekarang dipakai sebagai "Keterangan" bebas untuk paket tryout
+    # (mis. "Kelas Unggulan", "Paket A"). Nama kolom & atribut TIDAK
+    # diganti supaya tidak perlu migrasi DB — cukup nilai yang
+    # disimpan berubah jadi teks bebas. Panjang dinaikkan dari 20
+    # jadi 150 karakter (SQLite sendiri tidak menegakkan batas ini,
+    # jadi aman tanpa migrasi; batas 150 ditegakkan di validasi
+    # aplikasi, lihat routers/tryouts.py).
     difficulty = Column(
-        String(20),
+        String(150),
         nullable=True
     )
 

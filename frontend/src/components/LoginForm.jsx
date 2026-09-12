@@ -2,7 +2,8 @@ import { useState } from "react";
 
 
 function LoginForm({
-  onLogin
+  onLogin,
+  infoMessage
 }) {
 
   const [username, setUsername] =
@@ -88,6 +89,28 @@ function LoginForm({
       <div className="login-box">
 
         <h2>Login</h2>
+
+        {/* PESAN INFO — mis. setelah SECRET_KEY diganti admin dan
+            semua orang di-logout paksa (lihat AdminSettings.jsx).
+            Bukan error, jadi dibedakan gayanya dari formError. */}
+
+        {infoMessage && (
+
+          <div
+            className="alert-success"
+            style={{
+              backgroundColor: "#d4edda",
+              color: "#155724",
+              padding: "10px",
+              borderRadius: "6px",
+              fontSize: "13px",
+              marginBottom: "15px",
+            }}
+          >
+            {infoMessage}
+          </div>
+
+        )}
 
 
         <form

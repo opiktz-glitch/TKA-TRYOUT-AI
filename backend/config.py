@@ -128,7 +128,7 @@ GEMINI_API_KEY = os.getenv(
 
 GEMINI_MODEL = os.getenv(
     "GEMINI_MODEL",
-    "gemini-2.5-flash"
+    "gemini-3.5-flash-lite"
 )
 
 GEMINI_BASE_URL = os.getenv(
@@ -147,3 +147,43 @@ AI_PROVIDER = os.getenv(
 
 if AI_PROVIDER not in ("OLLAMA", "GEMINI"):
     AI_PROVIDER = "OLLAMA"
+
+
+# ==========================================
+# PORT (UNTUK TAB "JARINGAN" DI PENGATURAN)
+# ==========================================
+# Cuma dipakai untuk MENAMPILKAN contoh URL yang benar di halaman
+# Pengaturan > Jaringan (mis. "http://192.168.1.5:5173"). Mengubah
+# nilai di sini TIDAK mengubah port sungguhan yang dipakai uvicorn/
+# Vite — itu diatur lewat argumen --port saat menjalankan server.
+# Samakan dua-duanya kalau memang menjalankan di port custom.
+# Pakai "os.getenv(...) or default", BUKAN "os.getenv(..., default)" —
+# kalau .env.example disalin dengan baris "FRONTEND_PORT=" (kosong,
+# bukan dihapus), os.getenv dengan argumen kedua tidak akan fallback
+# dan int("") akan error. Pola yang sama dipakai di DATABASE_URL di atas.
+FRONTEND_PORT = int(os.getenv("FRONTEND_PORT") or "5173")
+BACKEND_PORT = int(os.getenv("BACKEND_PORT") or "8000")
+
+
+# ==========================================
+# CORS — IZINKAN JUGA IP JARINGAN LOKAL (LAN/WIFI)
+# ==========================================
+# Supaya laptop/HP lain di WiFi yang sama bisa membuka frontend
+# lewat IP (mis. http://192.168.1.5:5173) dan API-nya TIDAK ditolak
+# CORS, tanpa admin perlu mengedit CORS_ORIGINS manual setiap kali
+# pindah jaringan / IP berubah (mis. pindah WiFi kampus/rumah/hotspot).
+#
+# Regex ini HANYA mengizinkan rentang IP privat standar (RFC 1918):
+#   - 192.168.x.x
+#   - 10.x.x.x
+#   - 172.16.x.x - 172.31.x.x
+# di port berapa pun, skema http atau https. Alamat publik di
+# internet TETAP harus didaftarkan manual lewat CORS_ORIGINS di
+# .env — regex ini tidak melonggarkan itu.
+CORS_ORIGIN_REGEX = (
+    r"^https?://("
+    r"192\.168\.\d{1,3}\.\d{1,3}"
+    r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+    r"|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}"
+    r")(:\d+)?$"
+)

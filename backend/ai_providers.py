@@ -1,6 +1,10 @@
+import base64
+import hashlib
 import json
+import logging
 
 import httpx
+from cryptography.fernet import Fernet, InvalidToken
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
@@ -14,6 +18,10 @@ from config import (
 )
 from models import AppSetting
 from schemas import ProviderStatus
+import auth
+
+
+logger = logging.getLogger(__name__)
 
 
 # =========================================================
@@ -104,11 +112,86 @@ def _config_key(provider_key: str, field: str) -> str:
     return f"ai_provider:{provider_key}:{field}"
 
 
+# =========================================================
+# ENKRIPSI NILAI SENSITIF (API KEY)
+#
+# API key provider AI (mis. Gemini) sebelumnya disimpan
+# apa adanya (plain-text) di tabel t_app_setting. Kalau
+# database bocor/dicuri, semua API key ikut bocor. Field
+# yang sensitif sekarang dienkripsi dulu (Fernet, AES
+# simetris) sebelum disimpan, dan didekripsi saat dibaca.
+#
+# Key enkripsi DITURUNKAN dari SECRET_KEY yang aktif (lihat
+# auth.get_active_secret_key(), sekarang disimpan di database,
+# bisa diganti admin dari Pengaturan > Keamanan) lewat SHA-256 ->
+# base64 urlsafe, supaya TIDAK perlu key enkripsi terpisah / setup
+# tambahan.
+#
+# SENGAJA TIDAK di-cache secara global (beda dari versi
+# sebelumnya) — karena SECRET_KEY sekarang bisa berubah kapan saja
+# saat aplikasi berjalan (admin klik "Simpan"/"Rotasi"), cache
+# global akan diam-diam memakai key yang sudah usang sampai server
+# di-restart. Overhead menurunkan ulang key setiap panggilan bisa
+# diabaikan (jarang dipanggil, hanya saat baca/tulis setting AI).
+#
+# Konsekuensinya: kalau SECRET_KEY berganti, semua API key yang
+# sudah tersimpan tidak akan bisa didekripsi lagi dan admin harus
+# memasukkan ulang lewat halaman Pengaturan — ini trade-off yang
+# wajar dibanding menyimpan API key plain-text.
+# =========================================================
+
+
+def _get_fernet(db: Session) -> Fernet:
+
+    derived_key = base64.urlsafe_b64encode(
+        hashlib.sha256(
+            auth.get_active_secret_key(db).encode()
+        ).digest()
+    )
+
+    return Fernet(derived_key)
+
+
+def _encrypt(value: str, db: Session) -> str:
+
+    if not value:
+        return value
+
+    return _get_fernet(db).encrypt(value.encode()).decode()
+
+
+def _decrypt(value: str, db: Session) -> str:
+
+    if not value:
+        return value
+
+    try:
+
+        return _get_fernet(db).decrypt(value.encode()).decode()
+
+    except InvalidToken:
+
+        # Data lama yang tersimpan SEBELUM enkripsi ditambahkan
+        # (masih plain-text), atau SECRET_KEY sudah berganti.
+        # Dikembalikan apa adanya supaya key lama tetap terpakai
+        # alih-alih membuat aplikasi error total; kalau memang
+        # SECRET_KEY berganti, provider akan gagal saat dipakai
+        # (401/403 dari Gemini) dan admin akan tahu perlu mengisi
+        # ulang API key-nya.
+        logger.warning(
+            "Gagal mendekripsi setting (kemungkinan data lama "
+            "plain-text atau SECRET_KEY berubah) — dipakai apa adanya."
+        )
+
+        return value
+
+
 def get_provider_config(
     db: Session,
     provider_key: str,
     field: str,
-    default: str = ""
+    default: str = "",
+    encrypted: bool = False,
 ) -> str:
 
     setting = (
@@ -118,7 +201,10 @@ def get_provider_config(
     )
 
     if setting and setting.value.strip():
-        return setting.value.strip()
+
+        value = setting.value.strip()
+
+        return _decrypt(value, db) if encrypted else value
 
     return default
 
@@ -127,10 +213,13 @@ def set_provider_config(
     db: Session,
     provider_key: str,
     field: str,
-    value: str
+    value: str,
+    encrypted: bool = False,
 ) -> None:
 
     key = _config_key(provider_key, field)
+
+    stored_value = _encrypt(value, db) if encrypted else value
 
     setting = (
         db.query(AppSetting)
@@ -139,9 +228,9 @@ def set_provider_config(
     )
 
     if setting:
-        setting.value = value
+        setting.value = stored_value
     else:
-        db.add(AppSetting(key=key, value=value))
+        db.add(AppSetting(key=key, value=stored_value))
 
 
 def delete_provider_config(db: Session, provider_key: str, field: str) -> None:
@@ -335,7 +424,16 @@ async def status_ollama_provider(db: Session) -> ProviderStatus:
 
     if not reachable:
         detail = "Ollama tidak terdeteksi berjalan di laptop ini"
-    elif installed_models and not any(
+    elif not installed_models:
+        # Reachable tapi belum ada satupun model ter-pull. Beda
+        # kasus dari "model tertentu belum di-pull" di bawah, jadi
+        # pesannya dibuat lebih eksplisit supaya admin tahu daftar
+        # model kosong, bukan cuma model yang diinginkan yang hilang.
+        detail = (
+            f"Belum ada model ter-pull di Ollama. Jalankan "
+            f"'ollama pull {model}' terlebih dahulu."
+        )
+    elif not any(
         model in installed for installed in installed_models
     ):
         detail = f"Model '{model}' belum di-pull di Ollama"
@@ -372,7 +470,7 @@ async def check_gemini_key(api_key: str) -> tuple[bool, str | None]:
 
             response = await client.get(
                 f"{GEMINI_BASE_URL}/models",
-                params={"key": api_key},
+                headers={"x-goog-api-key": api_key},
             )
 
         if response.status_code == 200:
@@ -390,18 +488,23 @@ async def check_gemini_key(api_key: str) -> tuple[bool, str | None]:
         return False, "Tidak dapat menghubungi Gemini (periksa koneksi internet)"
 
     except Exception:
+        # Exception tak terduga (bukan timeout/connect error yang
+        # sudah ditangani di atas) — dicatat ke log server supaya
+        # bisa didiagnosis, tapi pesan ke user tetap generik supaya
+        # tidak membocorkan detail internal.
+        logger.exception("Gagal memeriksa API key Gemini")
         return False, "Gagal menghubungi Gemini"
 
 
 async def call_gemini_provider(prompt: str, db: Session) -> dict:
 
     api_key = get_provider_config(
-        db, "GEMINI", "api_key", default=GEMINI_API_KEY
+        db, "GEMINI", "api_key", default=GEMINI_API_KEY, encrypted=True
     )
 
     model = get_provider_config(
         db, "GEMINI", "model", default=GEMINI_MODEL
-    ) or "gemini-2.5-flash"
+    ) or "gemini-3.5-flash-lite"
 
     if not api_key:
 
@@ -429,7 +532,7 @@ async def call_gemini_provider(prompt: str, db: Session) -> dict:
 
             response = await client.post(
                 f"{GEMINI_BASE_URL}/models/{model}:generateContent",
-                params={"key": api_key},
+                headers={"x-goog-api-key": api_key},
                 json=payload,
             )
 
@@ -509,12 +612,12 @@ async def call_gemini_provider(prompt: str, db: Session) -> dict:
 async def status_gemini_provider(db: Session) -> ProviderStatus:
 
     api_key = get_provider_config(
-        db, "GEMINI", "api_key", default=GEMINI_API_KEY
+        db, "GEMINI", "api_key", default=GEMINI_API_KEY, encrypted=True
     )
 
     model = get_provider_config(
         db, "GEMINI", "model", default=GEMINI_MODEL
-    ) or "gemini-2.5-flash"
+    ) or "gemini-3.5-flash-lite"
 
     if not api_key:
 

@@ -140,10 +140,11 @@ def login(
 
 
     token = create_access_token(
-    data={
-        "sub": user.username,
-        "role": user.role
-    },
+        data={
+            "sub": user.username,
+            "role": user.role
+        },
+        db=db,
         expires_delta=expires
     )
 

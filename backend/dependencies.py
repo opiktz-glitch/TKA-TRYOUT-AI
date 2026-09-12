@@ -10,10 +10,9 @@ from database import get_db
 
 from models import User
 
-from config import (
-    SECRET_KEY,
-    ALGORITHM
-)
+from config import ALGORITHM
+
+import auth
 
 
 oauth2_scheme = OAuth2PasswordBearer(
@@ -41,7 +40,7 @@ def get_current_user(
 
         payload = jwt.decode(
             token,
-            SECRET_KEY,
+            auth.get_active_secret_key(db),
             algorithms=[ALGORITHM]
         )
 
@@ -54,8 +53,13 @@ def get_current_user(
             raise credentials_exception
 
 
-    except JWTError:
+    except (JWTError, RuntimeError):
 
+        # RuntimeError di sini berarti get_active_secret_key() tidak
+        # menemukan SECRET_KEY sama sekali (harusnya tidak pernah
+        # terjadi setelah bootstrap saat startup) — tetap dibalas
+        # sebagai 401 biasa, bukan 500, supaya tidak membocorkan
+        # detail internal ke client.
         raise credentials_exception
 
 

@@ -2,16 +2,20 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import User
+from models import User, AppSetting
 from schemas import (
     AIProvidersResponse,
     AIProviderUpdate,
     ProviderConfigUpdate,
     AIStatusResponse,
+    SecretKeyStatusResponse,
+    SecretKeyUpdateRequest,
+    SecretKeyActionResponse,
 )
 from dependencies import require_role
 
 import ai_providers
+import auth
 
 
 router = APIRouter(
@@ -178,7 +182,9 @@ async def update_provider_config(
                         )
                     )
 
-            ai_providers.set_provider_config(db, provider_key, "api_key", new_key)
+            ai_providers.set_provider_config(
+                db, provider_key, "api_key", new_key, encrypted=True
+            )
 
         else:
 
@@ -285,5 +291,134 @@ async def get_ai_status(
             f"Tidak ada AI yang online. Provider aktif saat ini "
             f"({status.label}): {reason}. Hubungi admin untuk memeriksa "
             "Pengaturan AI, atau coba lagi nanti."
+        ),
+    )
+
+
+# =========================================================
+# SECRET_KEY (Pengaturan > Keamanan)
+#
+# SECRET_KEY dipakai untuk menandatangani JWT (semua sesi login)
+# DAN menurunkan kunci enkripsi API key provider AI di atas.
+# Endpoint-endpoint ini SENGAJA dibatasi ADMIN saja (bukan GURU),
+# beda dengan konfigurasi AI di atas — ini kredensial keamanan
+# inti aplikasi, bukan sekadar setting fitur.
+# =========================================================
+
+@router.get(
+    "/secret-key",
+    response_model=SecretKeyStatusResponse,
+)
+def get_secret_key_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("ADMIN")),
+):
+    """
+    Status SECRET_KEY untuk kartu "Keamanan" di halaman Pengaturan.
+    Nilai aslinya TIDAK PERNAH dikirim — cukup versi masking-nya
+    (sama pola dengan masked_key API key provider AI) supaya admin
+    tahu ada key tersimpan tanpa mengekspos isinya lewat network
+    tab / log frontend.
+    """
+
+    setting = (
+        db.query(AppSetting)
+        .filter(AppSetting.key == auth.SECRET_KEY_SETTING_KEY)
+        .first()
+    )
+
+    if not setting or not setting.value.strip():
+        return SecretKeyStatusResponse(is_configured=False)
+
+    changed_by_setting = (
+        db.query(AppSetting)
+        .filter(AppSetting.key == auth.SECRET_KEY_CHANGED_BY_SETTING_KEY)
+        .first()
+    )
+
+    return SecretKeyStatusResponse(
+        is_configured=True,
+        masked_key=ai_providers.mask_api_key(setting.value),
+        updated_at=setting.updated_at,
+        changed_by=(
+            changed_by_setting.value
+            if changed_by_setting and changed_by_setting.value != "-"
+            else None
+        ),
+    )
+
+
+@router.put(
+    "/secret-key",
+    response_model=SecretKeyActionResponse,
+)
+def update_secret_key(
+    data: SecretKeyUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("ADMIN")),
+):
+    """
+    Admin menempelkan SECRET_KEY sendiri (mis. hasil generate manual,
+    atau untuk menyamakan dengan environment lain). Panjang minimal
+    sudah divalidasi di schema (32 karakter).
+
+    PENTING: begitu berhasil, SEMUA token JWT yang sudah terbit
+    (termasuk milik admin yang melakukan aksi ini) langsung tidak
+    valid. Ini disengaja — response tetap 200 karena request ini
+    sendiri sudah diautentikasi dengan key LAMA sebelum diganti,
+    tapi frontend wajib langsung logout begitu menerima
+    force_logout=True di response.
+    """
+
+    new_key = data.new_secret_key.strip()
+
+    if len(new_key) < auth.MIN_SECRET_KEY_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"SECRET_KEY minimal {auth.MIN_SECRET_KEY_LENGTH} "
+                "karakter demi keamanan."
+            ),
+        )
+
+    auth.set_secret_key(db, new_key, changed_by=current_user.username)
+
+    db.commit()
+
+    return SecretKeyActionResponse(
+        success=True,
+        message=(
+            "SECRET_KEY berhasil disimpan. Semua sesi login "
+            "(termasuk sesi Anda saat ini) akan diminta login ulang."
+        ),
+    )
+
+
+@router.post(
+    "/secret-key/rotate",
+    response_model=SecretKeyActionResponse,
+)
+def rotate_secret_key(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("ADMIN")),
+):
+    """
+    Generate SECRET_KEY acak baru secara otomatis (tanpa admin perlu
+    mengetik apa pun) — cara yang direkomendasikan untuk rotasi rutin
+    dibanding menempelkan key manual. Konsekuensi sama seperti
+    update_secret_key(): semua sesi login langsung tidak valid.
+    """
+
+    new_key = auth.generate_secret_key()
+
+    auth.set_secret_key(db, new_key, changed_by=current_user.username)
+
+    db.commit()
+
+    return SecretKeyActionResponse(
+        success=True,
+        message=(
+            "SECRET_KEY berhasil dirotasi otomatis. Semua sesi login "
+            "(termasuk sesi Anda saat ini) akan diminta login ulang."
         ),
     )

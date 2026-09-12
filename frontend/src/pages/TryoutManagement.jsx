@@ -28,7 +28,7 @@ const DIFFICULTIES = [
   },
 ];
 
-const GRADES = ["10", "11", "12"];
+const GRADES = ["4", "5", "6"];
 
 function TryoutManagement() {
   // =====================================================
@@ -38,6 +38,8 @@ function TryoutManagement() {
   const [tryouts, setTryouts] = useState([]);
   const [subjects, setSubjects] = useState([]);
   const [availableQuestions, setAvailableQuestions] = useState([]);
+  const [bankSoalDifficultyFilter, setBankSoalDifficultyFilter] =
+    useState("");
 
   // =====================================================
   // UI STATE
@@ -81,7 +83,7 @@ function TryoutManagement() {
       grade: "",
       duration_minutes: 60,
       max_score: 100,
-      difficulty: "MEDIUM",
+      difficulty: "",
       is_active: true,
       questions: [],
     };
@@ -137,7 +139,7 @@ function TryoutManagement() {
   // LOAD AVAILABLE QUESTIONS
   // =====================================================
 
-  async function loadAvailableQuestions(subjectId, difficulty = "") {
+  async function loadAvailableQuestions(subjectId) {
     if (!subjectId) {
       setAvailableQuestions([]);
       return;
@@ -146,7 +148,7 @@ function TryoutManagement() {
     try {
       setLoadingQuestions(true);
 
-      const data = await getAvailableQuestions(subjectId, difficulty);
+      const data = await getAvailableQuestions(subjectId);
 
       setAvailableQuestions(data);
     } catch (err) {
@@ -202,17 +204,13 @@ function TryoutManagement() {
       }));
 
       setAvailableQuestions([]);
+      setBankSoalDifficultyFilter("");
 
       if (value) {
-        loadAvailableQuestions(value, form.difficulty);
-      }
-
-      return;
-    }
-
-    if (name === "difficulty") {
-      if (form.subject_id) {
-        loadAvailableQuestions(form.subject_id, value);
+        // Bank soal ditampilkan untuk SEMUA tingkat kesulitan
+        // sekaligus (EASY/MEDIUM/HARD) selama mata pelajarannya
+        // sama — tidak lagi difilter per tingkat kesulitan.
+        loadAvailableQuestions(value);
       }
 
       return;
@@ -227,6 +225,7 @@ function TryoutManagement() {
     setEditingTryout(null);
     setForm(createEmptyForm());
     setAvailableQuestions([]);
+    setBankSoalDifficultyFilter("");
     setFormError("");
     setFormSuccess("");
     setShowModal(true);
@@ -242,6 +241,7 @@ function TryoutManagement() {
       setFormError("");
       setFormSuccess("");
       setEditingTryout(tryout);
+      setBankSoalDifficultyFilter("");
 
       const detail = await getTryout(tryout.id);
 
@@ -252,7 +252,7 @@ function TryoutManagement() {
         grade: detail.grade || "",
         duration_minutes: detail.duration_minutes || 60,
         max_score: detail.max_score || 100,
-        difficulty: detail.difficulty || "MEDIUM",
+        difficulty: detail.difficulty || "",
         is_active: detail.is_active !== false,
         questions: (detail.questions || []).map((item) => ({
           question_id: Number(item.question_id),
@@ -263,10 +263,7 @@ function TryoutManagement() {
 
       setShowModal(true);
 
-      await loadAvailableQuestions(
-        detail.subject_id,
-        detail.difficulty || ""
-      );
+      await loadAvailableQuestions(detail.subject_id);
     } catch (err) {
       console.error("OPEN EDIT TRYOUT ERROR:", err);
       setEditingTryout(null);
@@ -517,7 +514,7 @@ function TryoutManagement() {
         grade: form.grade || null,
         duration_minutes: Number(form.duration_minutes),
         max_score: Number(form.max_score),
-        difficulty: form.difficulty || null,
+        difficulty: form.difficulty.trim() || null,
         is_active: form.is_active,
         questions: form.questions.map((item) => ({
           question_id: Number(item.question_id),
@@ -615,7 +612,10 @@ function TryoutManagement() {
         !subjectFilter || String(tryout.subject_id) === String(subjectFilter);
 
       const matchesDifficulty =
-        !difficultyFilter || tryout.difficulty === difficultyFilter;
+        !difficultyFilter ||
+        (tryout.difficulty || "")
+          .toLowerCase()
+          .includes(difficultyFilter.trim().toLowerCase());
 
       const matchesStatus =
         !statusFilter ||
@@ -633,6 +633,26 @@ function TryoutManagement() {
     difficultyFilter,
     statusFilter,
   ]);
+
+  // =====================================================
+  // BANK SOAL — FILTER TINGKAT KESULITAN (di dalam modal)
+  //
+  // availableQuestions sendiri SUDAH berisi semua tingkat
+  // kesulitan (tidak difilter saat fetch dari backend). Filter
+  // di bawah ini murni tampilan di sisi frontend supaya guru
+  // bisa mempersempit daftar kalau paket soalnya banyak, tanpa
+  // membatasi soal mana yang boleh benar-benar dipilih.
+  // =====================================================
+
+  const filteredAvailableQuestions = useMemo(() => {
+    if (!bankSoalDifficultyFilter) {
+      return availableQuestions;
+    }
+
+    return availableQuestions.filter(
+      (question) => question.difficulty === bankSoalDifficultyFilter
+    );
+  }, [availableQuestions, bankSoalDifficultyFilter]);
 
   // =====================================================
   // RENDER
@@ -693,18 +713,13 @@ function TryoutManagement() {
               </div>
 
               <div className="filter-group">
-                <select
+                <input
+                  type="text"
+                  placeholder="Cari keterangan..."
+                  className="search-input"
                   value={difficultyFilter}
                   onChange={(e) => setDifficultyFilter(e.target.value)}
-                  className="search-input"
-                >
-                  <option value="">Semua Tingkat Kesulitan</option>
-                  {DIFFICULTIES.map((item) => (
-                    <option key={item.value} value={item.value}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
+                />
               </div>
 
               <div className="filter-group">
@@ -752,7 +767,7 @@ function TryoutManagement() {
                       <th>Kelas</th>
                       <th>Soal</th>
                       <th>Durasi</th>
-                      <th>Difficulty</th>
+                      <th>Keterangan</th>
                       <th>Status</th>
                       <th>Aksi</th>
                     </tr>
@@ -786,15 +801,7 @@ function TryoutManagement() {
 
                         <td>{tryout.duration_minutes} menit</td>
 
-                        <td>
-                          <span
-                            className={`difficulty-badge ${(
-                              tryout.difficulty || ""
-                            ).toLowerCase()}`}
-                          >
-                            {getDifficultyLabel(tryout.difficulty)}
-                          </span>
-                        </td>
+                        <td>{tryout.difficulty || "-"}</td>
 
                         <td>
                           {tryout.is_active ? (
@@ -970,20 +977,20 @@ function TryoutManagement() {
               </div>
 
               <div className="form-group">
-                <label>Tingkat Kesulitan *</label>
-                <select
+                <label>Keterangan</label>
+                <input
+                  type="text"
                   name="difficulty"
                   value={form.difficulty}
                   onChange={handleChange}
                   disabled={saving}
-                  required
-                >
-                  {DIFFICULTIES.map((item) => (
-                    <option key={item.value} value={item.value}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
+                  maxLength={150}
+                  placeholder="Contoh: Kelas Unggulan, Paket A (opsional)"
+                />
+                <small style={{ color: "#777" }}>
+                  Catatan bebas untuk paket tryout ini — tidak
+                  membatasi soal mana yang boleh dipilih di bawah.
+                </small>
               </div>
 
               <div className="form-checkbox">
@@ -1005,8 +1012,28 @@ function TryoutManagement() {
               <div className="options-section">
                 <div className="section-title">
                   <strong>Bank Soal</strong>
-                  <span>Pilih soal yang akan dimasukkan ke dalam paket tryout.</span>
+                  <span>Pilih soal yang akan dimasukkan ke dalam paket tryout. Semua tingkat kesulitan (mudah/sedang/sulit) boleh dicampur, yang penting mata pelajarannya sama.</span>
                 </div>
+
+                {form.subject_id && (
+                  <div className="form-group" style={{ marginBottom: "12px" }}>
+                    <label>Filter Tingkat Kesulitan</label>
+                    <select
+                      value={bankSoalDifficultyFilter}
+                      onChange={(e) =>
+                        setBankSoalDifficultyFilter(e.target.value)
+                      }
+                      disabled={saving}
+                    >
+                      <option value="">Semua Tingkat Kesulitan</option>
+                      {DIFFICULTIES.map((item) => (
+                        <option key={item.value} value={item.value}>
+                          {item.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
 
                 {!form.subject_id && (
                   <div
@@ -1031,7 +1058,7 @@ function TryoutManagement() {
 
                 {form.subject_id &&
                   !loadingQuestions &&
-                  availableQuestions.length === 0 && (
+                  filteredAvailableQuestions.length === 0 && (
                     <div
                       style={{
                         padding: "20px",
@@ -1042,13 +1069,15 @@ function TryoutManagement() {
                         fontSize: "13px",
                       }}
                     >
-                      Tidak ada soal aktif untuk mata pelajaran dan difficulty tersebut.
+                      {availableQuestions.length === 0
+                        ? "Tidak ada soal aktif untuk mata pelajaran tersebut."
+                        : "Tidak ada soal dengan tingkat kesulitan tersebut."}
                     </div>
                   )}
 
                 {form.subject_id &&
                   !loadingQuestions &&
-                  availableQuestions.length > 0 && (
+                  filteredAvailableQuestions.length > 0 && (
                     <div
                       style={{
                         maxHeight: "330px",
@@ -1057,7 +1086,7 @@ function TryoutManagement() {
                         borderRadius: "7px",
                       }}
                     >
-                      {availableQuestions.map((question, index) => {
+                      {filteredAvailableQuestions.map((question, index) => {
                         const selected = isQuestionSelected(question.id);
                         const selectedItem = form.questions.find(
                           (item) =>

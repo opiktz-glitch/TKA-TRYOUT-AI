@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 
 import Sidebar from "../components/Sidebar";
 import Header from "../components/Header";
-import { IconUser, IconKey } from "../components/Icons";
+import { IconUser, IconKey, IconShield, IconRefresh, IconWifi, IconCheck } from "../components/Icons";
 
 import {
   updateMyAccountProfile,
@@ -11,6 +11,10 @@ import {
   updateActiveProvider,
   updateProviderConfig,
   clearProviderConfig,
+  getSecretKeyStatus,
+  updateSecretKey,
+  rotateSecretKey,
+  getNetworkInfo,
 } from "../services/api";
 import { useAuth } from "../auth/AuthContext";
 
@@ -18,12 +22,14 @@ import { useAuth } from "../auth/AuthContext";
 const TABS = [
   { key: "profile", label: "Profil Saya" },
   { key: "ai-model", label: "AI" },
+  { key: "security", label: "Keamanan" },
+  { key: "network", label: "Jaringan" },
 ];
 
 
 function AdminSettings() {
   const navigate = useNavigate();
-  const { user, refreshUser } = useAuth();
+  const { user, refreshUser, logout } = useAuth();
 
   const [activeTab, setActiveTab] = useState("profile");
 
@@ -59,9 +65,162 @@ function AdminSettings() {
   const [configSuccess, setConfigSuccess] = useState({});
 
 
+  // ======================================================
+  // SECRET_KEY (Pengaturan > Keamanan)
+  //
+  // Mengganti/merotasi SECRET_KEY membuat SEMUA sesi login
+  // (termasuk sesi admin yang melakukan aksi ini) langsung tidak
+  // valid — begitu backend membalas sukses, kita langsung logout
+  // sendiri & arahkan ke halaman login, alih-alih menunggu
+  // request berikutnya gagal dengan 401.
+  // ======================================================
+
+  const [secretKeyStatus, setSecretKeyStatus] = useState(null);
+  const [secretKeyLoading, setSecretKeyLoading] = useState(true);
+  const [secretKeyError, setSecretKeyError] = useState("");
+
+  const [secretKeyDraft, setSecretKeyDraft] = useState("");
+  const [savingSecretKey, setSavingSecretKey] = useState(false);
+  const [rotatingSecretKey, setRotatingSecretKey] = useState(false);
+
+  // "confirm" -> null | "save" | "rotate". Dipakai untuk
+  // menampilkan dialog konfirmasi sebelum benar-benar
+  // mengeksekusi, karena aksi ini me-logout SEMUA orang yang
+  // sedang login (termasuk siswa yang mungkin sedang tryout).
+  const [secretKeyConfirm, setSecretKeyConfirm] = useState(null);
+
+
+  // ======================================================
+  // JARINGAN (Pengaturan > Jaringan)
+  //
+  // Menampilkan IP address laptop ini di WiFi/LAN yang aktif,
+  // supaya admin tinggal membagikan URL-nya ke laptop/HP lain
+  // di jaringan yang sama, tanpa perlu buka Command Prompt.
+  // ======================================================
+
+  const [networkInfo, setNetworkInfo] = useState(null);
+  const [networkLoading, setNetworkLoading] = useState(true);
+  const [networkError, setNetworkError] = useState("");
+  const [copiedUrl, setCopiedUrl] = useState("");
+
+
   useEffect(() => {
     loadProviders();
+    loadSecretKeyStatus();
   }, []);
+
+
+  useEffect(() => {
+    if (activeTab === "network") {
+      loadNetworkInfo();
+    }
+  }, [activeTab]);
+
+
+  async function loadNetworkInfo() {
+    setNetworkLoading(true);
+    setNetworkError("");
+
+    try {
+      const data = await getNetworkInfo();
+      setNetworkInfo(data);
+    } catch (err) {
+      console.error("GET NETWORK INFO ERROR:", err);
+      setNetworkError(err.message || "Gagal memuat info jaringan");
+    } finally {
+      setNetworkLoading(false);
+    }
+  }
+
+
+  async function handleCopyUrl(url) {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedUrl(url);
+      setTimeout(() => setCopiedUrl(""), 1800);
+    } catch (err) {
+      console.error("COPY URL ERROR:", err);
+    }
+  }
+
+
+  async function loadSecretKeyStatus() {
+    setSecretKeyLoading(true);
+    setSecretKeyError("");
+
+    try {
+      const data = await getSecretKeyStatus();
+      setSecretKeyStatus(data);
+    } catch (err) {
+      console.error("GET SECRET KEY STATUS ERROR:", err);
+      setSecretKeyError(err.message || "Gagal memuat status SECRET_KEY");
+    } finally {
+      setSecretKeyLoading(false);
+    }
+  }
+
+
+  // Dipanggil setelah "Simpan"/"Rotasi" berhasil — backend sudah
+  // mengganti key, jadi token yang sedang dipakai browser ini
+  // pasti sudah tidak valid untuk request berikutnya. Logout
+  // sendiri di sini lebih ramah daripada membiarkan user mengklik
+  // sesuatu lalu tiba-tiba "terlempar" oleh error 401.
+  function forceLogoutAfterSecretKeyChange(message) {
+    logout();
+    navigate("/login", {
+      replace: true,
+      state: { message },
+    });
+  }
+
+
+  async function handleSaveSecretKey() {
+    setSecretKeyError("");
+
+    const value = secretKeyDraft.trim();
+
+    if (value.length < 32) {
+      setSecretKeyError("SECRET_KEY minimal 32 karakter demi keamanan.");
+      return;
+    }
+
+    try {
+      setSavingSecretKey(true);
+
+      const data = await updateSecretKey(value);
+
+      forceLogoutAfterSecretKeyChange(
+        data.message ||
+          "SECRET_KEY berhasil disimpan. Silakan login kembali."
+      );
+    } catch (err) {
+      console.error("UPDATE SECRET KEY ERROR:", err);
+      setSecretKeyError(err.message || "Gagal menyimpan SECRET_KEY");
+      setSavingSecretKey(false);
+      setSecretKeyConfirm(null);
+    }
+  }
+
+
+  async function handleRotateSecretKey() {
+    setSecretKeyError("");
+
+    try {
+      setRotatingSecretKey(true);
+
+      const data = await rotateSecretKey();
+
+      forceLogoutAfterSecretKeyChange(
+        data.message ||
+          "SECRET_KEY berhasil dirotasi. Silakan login kembali."
+      );
+    } catch (err) {
+      console.error("ROTATE SECRET KEY ERROR:", err);
+      setSecretKeyError(err.message || "Gagal merotasi SECRET_KEY");
+      setRotatingSecretKey(false);
+      setSecretKeyConfirm(null);
+    }
+  }
 
 
   async function loadProviders() {
@@ -727,6 +886,353 @@ function AdminSettings() {
               })}
 
             </>
+          )}
+
+          {/* ============================================= */}
+          {/* TAB: KEAMANAN — SECRET_KEY (JWT)               */}
+          {/* ============================================= */}
+
+          {activeTab === "security" && (
+            <div
+              className="dashboard-card"
+              style={{ maxWidth: "700px", margin: "0 auto", padding: "24px" }}
+            >
+              <h2 style={{ marginTop: 0, marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                <IconShield size={18} />
+                SECRET_KEY
+              </h2>
+
+              <p style={{ marginTop: 0, marginBottom: 22, color: "#6b7280", fontSize: 13 }}>
+                Kunci rahasia untuk menandatangani sesi login (JWT) seluruh
+                aplikasi. Tersimpan di database — tidak perlu edit file .env
+                atau restart server untuk menggantinya.
+              </p>
+
+              <div
+                style={{
+                  backgroundColor: "#fff3cd",
+                  color: "#856404",
+                  padding: "10px 12px",
+                  borderRadius: "6px",
+                  fontSize: "13px",
+                  marginBottom: "20px",
+                }}
+              >
+                ⚠️ Menyimpan atau merotasi SECRET_KEY langsung membuat{" "}
+                <strong>semua sesi login yang sedang aktif tidak valid</strong>{" "}
+                — termasuk sesi Anda sendiri (Anda akan diminta login ulang),
+                guru, dan siswa yang mungkin sedang mengerjakan tryout.
+                Sebaiknya lakukan di luar jam ujian.
+              </div>
+
+              {secretKeyError && (
+                <div className="error-message" style={{ marginBottom: 18 }}>
+                  {secretKeyError}
+                </div>
+              )}
+
+              {secretKeyLoading ? (
+                <p style={{ color: "#6b7280", fontSize: 13 }}>Memuat status...</p>
+              ) : (
+                <>
+                  <div
+                    style={{
+                      border: "1px solid var(--line)",
+                      borderRadius: 8,
+                      padding: "12px 14px",
+                      marginBottom: 22,
+                      fontSize: 13,
+                    }}
+                  >
+                    <div style={{ marginBottom: 4 }}>
+                      <strong>Key saat ini:</strong>{" "}
+                      <code>{secretKeyStatus?.masked_key || "-"}</code>
+                    </div>
+
+                    {secretKeyStatus?.updated_at && (
+                      <div style={{ color: "#6b7280" }}>
+                        Terakhir diganti:{" "}
+                        {new Date(secretKeyStatus.updated_at).toLocaleString("id-ID")}
+                        {secretKeyStatus?.changed_by
+                          ? ` oleh @${secretKeyStatus.changed_by}`
+                          : ""}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ROTASI OTOMATIS */}
+
+                  <div style={{ marginBottom: 26 }}>
+                    <label style={{ fontWeight: 600, fontSize: 14, display: "block", marginBottom: 6 }}>
+                      Rotasi Otomatis
+                    </label>
+                    <p style={{ marginTop: 0, marginBottom: 12, color: "#6b7280", fontSize: 13 }}>
+                      Generate key acak baru secara otomatis — cara yang
+                      direkomendasikan untuk rotasi rutin, tidak perlu
+                      mengetik apa pun.
+                    </p>
+
+                    {secretKeyConfirm === "rotate" ? (
+                      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 13, color: "#721c24" }}>
+                          Yakin? Semua orang akan ter-logout.
+                        </span>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={rotatingSecretKey}
+                          onClick={() => setSecretKeyConfirm(null)}
+                        >
+                          Batal
+                        </button>
+                        <button
+                          type="button"
+                          className="primary-button"
+                          disabled={rotatingSecretKey}
+                          onClick={handleRotateSecretKey}
+                        >
+                          {rotatingSecretKey ? "Merotasi..." : "Ya, Rotasi Sekarang"}
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={rotatingSecretKey}
+                        onClick={() => setSecretKeyConfirm("rotate")}
+                      >
+                        <IconRefresh size={15} />
+                        Rotasi Otomatis
+                      </button>
+                    )}
+                  </div>
+
+                  {/* ISI MANUAL */}
+
+                  <div>
+                    <label style={{ fontWeight: 600, fontSize: 14, display: "block", marginBottom: 6 }}>
+                      Isi Manual
+                    </label>
+                    <p style={{ marginTop: 0, marginBottom: 12, color: "#6b7280", fontSize: 13 }}>
+                      Tempel SECRET_KEY Anda sendiri (mis. untuk menyamakan
+                      dengan environment lain). Minimal 32 karakter.
+                    </p>
+
+                    <div className="form-group" style={{ marginBottom: 14 }}>
+                      <input
+                        type="password"
+                        value={secretKeyDraft}
+                        onChange={(e) => setSecretKeyDraft(e.target.value)}
+                        placeholder="Tempel SECRET_KEY baru di sini"
+                        autoComplete="off"
+                      />
+                    </div>
+
+                    {secretKeyConfirm === "save" ? (
+                      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                        <span style={{ fontSize: 13, color: "#721c24" }}>
+                          Yakin? Semua orang akan ter-logout.
+                        </span>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={savingSecretKey}
+                          onClick={() => setSecretKeyConfirm(null)}
+                        >
+                          Batal
+                        </button>
+                        <button
+                          type="button"
+                          className="primary-button"
+                          disabled={savingSecretKey}
+                          onClick={handleSaveSecretKey}
+                        >
+                          {savingSecretKey ? "Menyimpan..." : "Ya, Simpan Sekarang"}
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                        <button
+                          type="button"
+                          className="primary-button"
+                          disabled={savingSecretKey || secretKeyDraft.trim().length < 32}
+                          onClick={() => setSecretKeyConfirm("save")}
+                        >
+                          Simpan
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ============================================= */}
+          {/* TAB: JARINGAN — AKSES DARI LAPTOP LAIN (WIFI)  */}
+          {/* ============================================= */}
+
+          {activeTab === "network" && (
+            <div
+              className="dashboard-card"
+              style={{ maxWidth: "700px", margin: "0 auto", padding: "24px" }}
+            >
+              <h2 style={{ marginTop: 0, marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                <IconWifi size={18} />
+                Akses dari Laptop Lain
+              </h2>
+
+              <p style={{ marginTop: 0, marginBottom: 22, color: "#6b7280", fontSize: 13 }}>
+                Bagikan alamat di bawah ini ke laptop/HP lain yang
+                terhubung ke <strong>WiFi yang sama</strong> dengan
+                laptop ini, supaya mereka bisa membuka aplikasi tanpa
+                install apa pun.
+              </p>
+
+              {networkError && (
+                <div className="error-message" style={{ marginBottom: 18 }}>
+                  {networkError}
+                </div>
+              )}
+
+              {networkLoading ? (
+                <p style={{ color: "#6b7280", fontSize: 13 }}>Mendeteksi alamat jaringan...</p>
+              ) : (
+                <>
+                  {/* STATUS SERVER */}
+
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      border: "1px solid var(--line)",
+                      borderRadius: 8,
+                      padding: "12px 14px",
+                      marginBottom: 22,
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 10,
+                        height: 10,
+                        borderRadius: "50%",
+                        backgroundColor: networkInfo ? "#16a34a" : "#dc2626",
+                        flexShrink: 0,
+                      }}
+                    />
+                    <div style={{ fontSize: 13 }}>
+                      <strong>{networkInfo ? "Server sedang berjalan" : "Server tidak terdeteksi"}</strong>
+                      <div style={{ color: "#6b7280" }}>
+                        {networkInfo
+                          ? `Laptop ini: ${networkInfo.hostname} · Backend port ${networkInfo.backend_port} · Frontend port ${networkInfo.frontend_port}`
+                          : "Muat ulang halaman ini setelah backend & frontend dijalankan."}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* DAFTAR ALAMAT IP */}
+
+                  {networkInfo && networkInfo.addresses.length > 0 ? (
+                    <div style={{ marginBottom: 26 }}>
+                      <label style={{ fontWeight: 600, fontSize: 14, display: "block", marginBottom: 10 }}>
+                        Alamat untuk Dibagikan
+                      </label>
+
+                      {networkInfo.addresses.map((addr) => (
+                        <div
+                          key={addr.ip}
+                          style={{
+                            border: "1px solid var(--line)",
+                            borderRadius: 8,
+                            padding: "14px 16px",
+                            marginBottom: 12,
+                          }}
+                        >
+                          <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>
+                            {addr.interface} — {addr.ip}
+                          </div>
+
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                            <code
+                              style={{
+                                flex: 1,
+                                minWidth: 220,
+                                fontSize: 15,
+                                fontWeight: 600,
+                                padding: "8px 10px",
+                                background: "#f3f4f6",
+                                borderRadius: 6,
+                              }}
+                            >
+                              {addr.frontend_url}
+                            </code>
+
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() => handleCopyUrl(addr.frontend_url)}
+                            >
+                              {copiedUrl === addr.frontend_url ? (
+                                <>
+                                  <IconCheck size={14} /> Tersalin
+                                </>
+                              ) : (
+                                "Salin Link"
+                              )}
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    networkInfo && (
+                      <div className="error-message" style={{ marginBottom: 22 }}>
+                        Tidak ada IP jaringan lokal yang terdeteksi. Pastikan
+                        laptop ini sudah terhubung ke WiFi (bukan cuma
+                        Ethernet/hotspot pribadi), lalu muat ulang tab ini.
+                      </div>
+                    )
+                  )}
+
+                  {/* LANGKAH-LANGKAH */}
+
+                  <div>
+                    <label style={{ fontWeight: 600, fontSize: 14, display: "block", marginBottom: 10 }}>
+                      Cara Mengakses dari Laptop Lain
+                    </label>
+
+                    <ol style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: "#374151", lineHeight: 1.9 }}>
+                      <li>Pastikan laptop lain terhubung ke <strong>WiFi yang sama</strong> dengan laptop ini.</li>
+                      <li>Jalankan project ini dengan <code>python run_server.py</code> (BUKAN <code>run.py</code> biasa) — cuma <code>run_server.py</code> yang membuka akses ke WiFi.</li>
+                      <li>Pastikan backend & frontend masih berjalan di laptop ini (jangan ditutup terminalnya).</li>
+                      <li>Buka browser di laptop lain, lalu ketik/tempel salah satu alamat di atas.</li>
+                      <li>Login seperti biasa — data (soal, tryout, nilai) sama persis karena mengakses server yang sama.</li>
+                    </ol>
+
+                    <div
+                      style={{
+                        backgroundColor: "#fff3cd",
+                        color: "#856404",
+                        padding: "10px 12px",
+                        borderRadius: "6px",
+                        fontSize: "13px",
+                        marginTop: "18px",
+                      }}
+                    >
+                      ⚠️ Kalau laptop lain tetap tidak bisa connect, kemungkinan
+                      besar <strong>Windows Firewall</strong> di laptop ini
+                      memblokir port {networkInfo?.backend_port ?? 8000} &{" "}
+                      {networkInfo?.frontend_port ?? 5173}. Izinkan akses saat
+                      muncul pop-up "Windows Defender Firewall" ketika server
+                      pertama kali dijalankan, atau tambahkan izin manual lewat
+                      Control Panel &gt; Windows Defender Firewall &gt; Allow an
+                      app.
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
           )}
 
         </div>

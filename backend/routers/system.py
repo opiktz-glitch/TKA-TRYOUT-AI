@@ -6,9 +6,10 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from database import get_db
-from dependencies import get_current_user
-from config import DATABASE_URL, OLLAMA_BASE_URL, GEMINI_BASE_URL
+from dependencies import get_current_user, require_role
+from config import DATABASE_URL, OLLAMA_BASE_URL, GEMINI_BASE_URL, FRONTEND_PORT, BACKEND_PORT
 from models import User
+from schemas import NetworkInfoResponse, NetworkAddress
 import ai_providers
 
 
@@ -81,6 +82,100 @@ def parse_ai_host(base_url: str) -> str:
     except Exception:
 
         return base_url
+
+
+# =========================================================
+# HELPER — cari IP address laptop ini di jaringan lokal
+# (WiFi/LAN), supaya admin tidak perlu buka Command Prompt dan
+# ketik "ipconfig" manual untuk memberi tahu laptop lain cara
+# terhubung.
+# =========================================================
+
+def _is_private_ipv4(ip: str) -> bool:
+
+    parts = ip.split(".")
+
+    if len(parts) != 4 or not all(p.isdigit() for p in parts):
+        return False
+
+    a, b = int(parts[0]), int(parts[1])
+
+    return (
+        a == 10
+        or (a == 172 and 16 <= b <= 31)
+        or (a == 192 and b == 168)
+    )
+
+
+def get_local_network_ips() -> list[str]:
+
+    ips: set[str] = set()
+
+    # Cara 1: semua alamat yang terdaftar untuk hostname laptop ini.
+    # Bisa menemukan lebih dari satu kalau ada beberapa adapter
+    # jaringan (mis. WiFi + Ethernet virtual VPN/Docker).
+    try:
+        hostname = socket.gethostname()
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            ip = info[4][0]
+            if not ip.startswith("127."):
+                ips.add(ip)
+    except OSError:
+        pass
+
+    # Cara 2 (fallback/pelengkap): trik "connect" UDP ke alamat
+    # publik untuk membaca IP outbound utama OS. TIDAK benar-benar
+    # mengirim data (UDP connect cuma menentukan rute), jadi aman
+    # dipakai walau tidak ada internet — cuma perlu jaringan lokal.
+    # Ini biasanya cara PALING akurat menemukan IP WiFi yang aktif
+    # saat laptop punya banyak adapter.
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.settimeout(0.5)
+            s.connect(("8.8.8.8", 80))
+            ips.add(s.getsockname()[0])
+    except OSError:
+        pass
+
+    private_ips = sorted(ip for ip in ips if _is_private_ipv4(ip))
+
+    return private_ips or sorted(ips)
+
+
+@router.get("/network-info", response_model=NetworkInfoResponse)
+def get_network_info(
+    current_user: User = Depends(require_role("ADMIN")),
+):
+    """
+    Info untuk tab "Jaringan" di halaman Pengaturan Admin: IP
+    address laptop ini di WiFi/LAN yang sedang aktif, plus URL
+    lengkap yang tinggal disalin & dibuka di laptop/HP lain yang
+    terhubung ke jaringan WiFi yang SAMA.
+
+    Kalau endpoint ini berhasil terjawab, itu sendiri sudah bukti
+    backend sedang berjalan (backend_online selalu True di sini).
+    """
+
+    hostname = socket.gethostname()
+    ips = get_local_network_ips()
+
+    addresses = [
+        NetworkAddress(
+            interface="WiFi / LAN",
+            ip=ip,
+            frontend_url=f"http://{ip}:{FRONTEND_PORT}",
+            backend_url=f"http://{ip}:{BACKEND_PORT}",
+        )
+        for ip in ips
+    ]
+
+    return NetworkInfoResponse(
+        hostname=hostname,
+        frontend_port=FRONTEND_PORT,
+        backend_port=BACKEND_PORT,
+        addresses=addresses,
+        backend_online=True,
+    )
 
 
 @router.get("/status")

@@ -1,4 +1,6 @@
 
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
@@ -7,7 +9,7 @@ from fastapi.responses import JSONResponse
 import models
 
 from database import Base, engine
-from config import ALLOWED_ORIGINS
+from config import ALLOWED_ORIGINS, CORS_ORIGIN_REGEX
 
 from routers import auth
 from routers import users
@@ -21,6 +23,24 @@ from routers import teachers
 from routers import teacher
 from routers import system
 from routers import settings
+
+
+# ==========================================
+# LOGGING
+#
+# Tanpa basicConfig, pesan logging.exception()/logger.error()
+# dari modul lain (mis. ai_providers.py) tetap tercetak ke
+# stderr lewat "handler of last resort" bawaan Python, tapi
+# tanpa timestamp/nama modul sehingga sulit ditelusuri. Ini
+# memberi format yang jelas dan level minimum INFO supaya
+# error tak terduga (exception saat memanggil provider AI,
+# dll) selalu tercatat.
+# ==========================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 
 Base.metadata.create_all(bind=engine)
@@ -45,6 +65,13 @@ app.add_middleware(
     CORSMiddleware,
 
     allow_origins=ALLOWED_ORIGINS,
+
+    # Tambahan: izinkan juga origin manapun yang berasal dari IP
+    # jaringan lokal (192.168.x.x / 10.x.x.x / 172.16-31.x.x), supaya
+    # laptop/HP lain di WiFi yang sama otomatis bisa mengakses API
+    # tanpa perlu admin menambahkan IP itu satu-satu ke CORS_ORIGINS
+    # tiap kali ganti jaringan. Lihat config.py untuk detail regex-nya.
+    allow_origin_regex=CORS_ORIGIN_REGEX,
 
     allow_credentials=True,
 

@@ -263,6 +263,17 @@ export function IconCpu(props) {
   );
 }
 
+export function IconWifi(props) {
+  return (
+    <Svg {...props}>
+      <path d="M3 8.5a13 13 0 0118 0" />
+      <path d="M6.2 12a8.5 8.5 0 0111.6 0" />
+      <path d="M9.5 15.5a4 4 0 015 0" />
+      <circle cx="12" cy="18.5" r="1.1" fill="currentColor" stroke="none" />
+    </Svg>
+  );
+}
+
 export function IconKey(props) {
   return (
     <Svg {...props}>
