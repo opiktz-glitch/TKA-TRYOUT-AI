@@ -97,11 +97,20 @@ async function apiFetch(
   } = {}
 ) {
 
+  // Upload file (mis. impor soal dari dokumen) mengirim FormData,
+  // BUKAN JSON — kalau Content-Type dipaksa "application/json" di
+  // sini, browser tidak akan menambahkan boundary multipart yang
+  // benar dan request akan gagal di sisi backend. Untuk FormData,
+  // Content-Type SENGAJA tidak diisi sama sekali supaya browser
+  // yang menentukan sendiri (termasuk boundary-nya).
+  const isFormData =
+    typeof FormData !== "undefined" && body instanceof FormData;
+
   const headers = {
     ...(rest.headers || {}),
   };
 
-  if (body !== undefined) {
+  if (body !== undefined && !isFormData) {
     headers["Content-Type"] = "application/json";
   }
 
@@ -116,7 +125,10 @@ async function apiFetch(
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method,
     headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body:
+      body === undefined
+        ? undefined
+        : (isFormData ? body : JSON.stringify(body)),
     ...rest,
   });
 
@@ -312,6 +324,88 @@ export async function generateAIQuestion(payload) {
     if (err.name === "AbortError") {
       throw new Error(
         "AI terlalu lama merespons (lebih dari 150 detik). Coba lagi, atau gunakan model Ollama yang lebih ringan."
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+
+// =====================================================
+// IMPOR SOAL DARI DOKUMEN (PDF/DOCX/TXT) — 2 LANGKAH
+//
+// BEDA dari generateAIQuestion di atas: fitur ini TIDAK membuat
+// soal baru, hanya membaca ulang soal yang SUDAH ADA di file yang
+// diupload guru. Dipecah jadi 2 fungsi (bukan 1 seperti
+// sebelumnya) SUPAYA kalau AI gagal/lambat di tengah dokumen
+// panjang, potongan yang SUDAH selesai diproses tidak ikut hilang
+// — pemanggil (QuestionManagement.jsx) memanggil
+// prepareDocumentExtraction() SEKALI, lalu processDocumentChunk()
+// berulang per potongan, menambahkan hasilnya ke layar satu per
+// satu begitu tiap potongan selesai.
+// =====================================================
+
+// LANGKAH 1: upload file, dapat balik daftar potongan teks. Cepat
+// (tidak memanggil AI), jadi timeout-nya dibuat wajar saja (2 menit
+// — cukup longgar untuk dokumen besar yang perlu waktu di-parsing
+// pypdf/python-docx).
+export async function prepareDocumentExtraction(subjectId, file) {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 120000);
+
+  try {
+    return await apiFetch(
+      `/api/questions/ai-extract-document/prepare?subject_id=${encodeURIComponent(subjectId)}`,
+      {
+        method: "POST",
+        body: formData,
+        signal: controller.signal,
+      }
+    );
+  } catch (err) {
+    if (err.name === "AbortError") {
+      throw new Error(
+        "Terlalu lama membaca dokumen. Coba file yang lebih kecil."
+      );
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// LANGKAH 2: proses SATU potongan teks (dari hasil langkah 1) lewat
+// AI. Dipanggil berulang oleh pemanggil, satu per satu, BUKAN
+// Promise.all — supaya progress bisa ditampilkan per potongan dan
+// tidak membanjiri provider AI dengan banyak request bersamaan.
+// Timeout di sini cukup untuk SATU potongan saja (jauh lebih kecil
+// dari sebelumnya yang harus menampung SEMUA potongan sekaligus).
+export async function processDocumentChunk(subjectId, chunkText, expectedCount) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 280000);
+
+  try {
+    return await apiFetch(
+      "/api/questions/ai-extract-document/process-chunk",
+      {
+        method: "POST",
+        body: {
+          subject_id: subjectId,
+          chunk_text: chunkText,
+          expected_count: expectedCount,
+        },
+        signal: controller.signal,
+      }
+    );
+  } catch (err) {
+    if (err.name === "AbortError") {
+      throw new Error(
+        "AI terlalu lama memproses potongan ini (lebih dari ~4.5 menit)."
       );
     }
     throw err;

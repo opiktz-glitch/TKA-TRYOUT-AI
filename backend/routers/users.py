@@ -126,10 +126,10 @@ def reset_user_password(
     # Validasi password
     # -----------------------------------------------------
 
-    if len(password_data.new_password) < 8:
+    if len(password_data.new_password) < 6:
         raise HTTPException(
             status_code=400,
-            detail="Password minimal 8 karakter"
+            detail="Password minimal 6 karakter"
         )
 
     # -----------------------------------------------------

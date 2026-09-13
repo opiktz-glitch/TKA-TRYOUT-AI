@@ -65,8 +65,24 @@ logger = logging.getLogger(__name__)
 class ProviderDefinition:
     """
     Definisi satu provider AI. `call_fn` dan `status_fn` WAJIB
-    fungsi async dengan signature (prompt, db) -> dict dan
-    (db) -> ProviderStatus.
+    fungsi async dengan signature (prompt, db, larger_output=False)
+    -> dict dan (db) -> ProviderStatus. `larger_output` diminta
+    caller (lihat routers/questions.py -> extract_questions_from_
+    document) saat butuh jatah token keluaran lebih besar dari
+    generate 1 soal biasa — dipakai fitur "Impor Soal dari
+    Dokumen" karena satu chunk bisa berisi BEBERAPA soal sekaligus
+    (JSON hasilnya jauh lebih panjang dari generate 1 soal), tidak
+    seperti generate_question_ai() yang outputnya selalu 1 soal.
+
+    `extract_chunk_chars` = ukuran potongan teks (karakter) yang
+    OPTIMAL untuk provider ini saat memproses dokumen panjang di
+    fitur impor soal (lihat ai_providers.get_extract_chunk_chars).
+    Provider dengan context window kecil (Ollama lokal) butuh
+    potongan kecil supaya tidak melebihi num_ctx; provider dengan
+    context window besar (Gemini cloud) sengaja diberi potongan
+    BESAR justru untuk MENGURANGI jumlah panggilan API (lebih
+    murah & lebih kecil peluang kena rate limit / gagal jaringan
+    di tengah proses), bukan karena butuh dibatasi.
     """
 
     def __init__(
@@ -76,10 +92,12 @@ class ProviderDefinition:
         requires_api_key: bool,
         call_fn,
         status_fn,
+        extract_chunk_chars: int,
     ):
         self.key = key
         self.label = label
         self.requires_api_key = requires_api_key
+        self.extract_chunk_chars = extract_chunk_chars
         self.call_fn = call_fn
         self.status_fn = status_fn
 
@@ -327,11 +345,23 @@ async def _fetch_ollama_models() -> tuple[list[str], bool]:
         return [], False
 
 
-async def call_ollama_provider(prompt: str, db: Session) -> dict:
+async def call_ollama_provider(
+    prompt: str, db: Session, larger_output: bool = False
+) -> dict:
 
     model = get_provider_config(
         db, "OLLAMA", "model", default=OLLAMA_MODEL
     ) or OLLAMA_MODEL
+
+    # `larger_output=True` dipakai fitur impor soal dari dokumen:
+    # satu chunk teks bisa menghasilkan BEBERAPA soal sekaligus,
+    # jadi butuh jatah num_predict (token keluaran) yang jauh lebih
+    # besar dari generate 1 soal biasa. num_ctx (total jatah token,
+    # input+output digabung) ikut dinaikkan proporsional — kalau
+    # cuma num_predict yang dinaikkan tanpa num_ctx, jatah untuk
+    # TEKS INPUT justru makin sempit.
+    num_predict = 1200 if larger_output else 600
+    num_ctx = 4096 if larger_output else 2048
 
     payload = {
         "model": model,
@@ -348,14 +378,20 @@ async def call_ollama_provider(prompt: str, db: Session) -> dict:
         "options": {
             # Batas keras jumlah token keluaran, supaya waktu
             # generate lebih terprediksi.
-            "num_predict": 600,
-            "num_ctx": 2048,
+            "num_predict": num_predict,
+            "num_ctx": num_ctx,
         },
     }
 
+    # num_ctx yang lebih besar butuh lebih banyak waktu komputasi
+    # (terutama di laptop tanpa GPU khusus), jadi timeout HTTP ikut
+    # dilonggarkan supaya panggilan larger_output tidak keburu
+    # dianggap timeout padahal Ollama masih memproses secara wajar.
+    request_timeout = 240.0 if larger_output else 120.0
+
     try:
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=request_timeout) as client:
 
             response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/chat",
@@ -381,8 +417,9 @@ async def call_ollama_provider(prompt: str, db: Session) -> dict:
         raise HTTPException(
             status_code=504,
             detail=(
-                "AI (Ollama) terlalu lama merespons (lebih dari 2 menit). "
-                "Coba lagi, atau gunakan model Ollama yang lebih ringan."
+                "AI (Ollama) terlalu lama merespons (lebih dari "
+                f"{int(request_timeout // 60)} menit). Coba lagi, atau "
+                "gunakan model Ollama yang lebih ringan."
             )
         )
 
@@ -496,7 +533,9 @@ async def check_gemini_key(api_key: str) -> tuple[bool, str | None]:
         return False, "Gagal menghubungi Gemini"
 
 
-async def call_gemini_provider(prompt: str, db: Session) -> dict:
+async def call_gemini_provider(
+    prompt: str, db: Session, larger_output: bool = False
+) -> dict:
 
     api_key = get_provider_config(
         db, "GEMINI", "api_key", default=GEMINI_API_KEY, encrypted=True
@@ -516,19 +555,34 @@ async def call_gemini_provider(prompt: str, db: Session) -> dict:
             )
         )
 
+    # `larger_output=True` dipakai fitur impor soal dari dokumen —
+    # satu chunk teks (chunk Gemini sengaja dibuat BESAR, lihat
+    # extract_chunk_chars di register_provider() di bawah) bisa
+    # menghasilkan cukup banyak soal sekaligus dalam satu respons
+    # JSON, jauh lebih panjang dari generate 1 soal biasa. Context
+    # window Gemini sendiri sangat besar jadi TIDAK perlu
+    # dikhawatirkan seperti Ollama — di sini murni soal jatah
+    # output saja.
+    max_output_tokens = 4000 if larger_output else 800
+
     payload = {
         "contents": [
             {"parts": [{"text": prompt}]}
         ],
         "generationConfig": {
             "responseMimeType": "application/json",
-            "maxOutputTokens": 800,
+            "maxOutputTokens": max_output_tokens,
         },
     }
 
+    # Chunk besar (larger_output) wajar makan waktu lebih lama
+    # diproses & jawabannya lebih panjang untuk dikirim balik,
+    # jadi timeout HTTP ikut dilonggarkan.
+    request_timeout = 150.0 if larger_output else 60.0
+
     try:
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=request_timeout) as client:
 
             response = await client.post(
                 f"{GEMINI_BASE_URL}/models/{model}:generateContent",
@@ -660,6 +714,9 @@ register_provider(ProviderDefinition(
     requires_api_key=False,
     call_fn=call_ollama_provider,
     status_fn=status_ollama_provider,
+    # Kecil karena context window Ollama lokal (num_ctx) terbatas
+    # — lihat penjelasan lengkap di call_ollama_provider().
+    extract_chunk_chars=4000,
 ))
 
 register_provider(ProviderDefinition(
@@ -668,6 +725,12 @@ register_provider(ProviderDefinition(
     requires_api_key=True,
     call_fn=call_gemini_provider,
     status_fn=status_gemini_provider,
+    # SENGAJA besar (bukan kecil) — context window Gemini sangat
+    # longgar, jadi potongan besar dipakai untuk MENGURANGI jumlah
+    # panggilan API per dokumen: lebih murah (instruksi prompt
+    # tidak diulang-ulang per potongan kecil) dan lebih kecil
+    # peluang kena rate limit / gagal jaringan di tengah proses.
+    extract_chunk_chars=20000,
 ))
 
 
@@ -698,7 +761,9 @@ async def get_provider_status(db: Session, provider_key: str) -> ProviderStatus:
     return await definition.status_fn(db)
 
 
-async def call_active_provider(prompt: str, db: Session) -> dict:
+async def call_active_provider(
+    prompt: str, db: Session, larger_output: bool = False
+) -> dict:
 
     active_key = get_active_provider(db)
 
@@ -711,4 +776,32 @@ async def call_active_provider(prompt: str, db: Session) -> dict:
             detail="Tidak ada provider AI yang terdaftar/aktif."
         )
 
-    return await definition.call_fn(prompt, db)
+    return await definition.call_fn(prompt, db, larger_output=larger_output)
+
+
+# Dipakai kalau, karena suatu hal, tidak ada provider aktif yang
+# valid terdeteksi (mestinya jarang terjadi karena
+# extract_questions_from_document sudah mengecek status AI lebih
+# dulu) — nilai konservatif ala Ollama, supaya tetap aman dipakai
+# provider mana pun kalau sampai kejadian.
+DEFAULT_EXTRACT_CHUNK_CHARS = 2200
+
+
+def get_extract_chunk_chars(db: Session) -> int:
+    """
+    Ukuran potongan teks (karakter) yang OPTIMAL untuk provider AI
+    yang SEDANG AKTIF, dipakai fitur "Impor Soal dari Dokumen"
+    (routers/questions.py) saat memecah dokumen panjang jadi
+    beberapa chunk. Lihat komentar `extract_chunk_chars` di
+    ProviderDefinition untuk alasan tiap provider punya angka
+    berbeda.
+    """
+
+    active_key = get_active_provider(db)
+
+    definition = PROVIDERS.get(active_key)
+
+    if not definition:
+        return DEFAULT_EXTRACT_CHUNK_CHARS
+
+    return definition.extract_chunk_chars

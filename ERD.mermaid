@@ -1,0 +1,147 @@
+erDiagram
+    t_user ||--o| t_student : "punya profil"
+    t_user ||--o| t_teacher : "punya profil"
+    t_user ||--o{ t_question : "membuat (created_by)"
+    t_user ||--o{ t_tryout : "membuat (created_by)"
+
+    t_subject ||--o{ t_question : "punya"
+    t_subject ||--o{ t_tryout : "punya"
+
+    t_question ||--o{ t_question_option : "punya opsi"
+    t_question ||--o{ t_tryout_question : "dipakai di"
+    t_question ||--o{ t_answer : "dijawab lewat"
+
+    t_tryout ||--o{ t_tryout_question : "berisi"
+    t_tryout ||--o{ t_attempt : "dikerjakan lewat"
+
+    t_student ||--o{ t_attempt : "mengerjakan"
+
+    t_attempt ||--o{ t_answer : "berisi"
+    t_attempt ||--|| t_result : "menghasilkan"
+
+    t_user {
+        int id PK
+        string username UK
+        string password_hash
+        string full_name
+        string role "ADMIN / GURU / SISWA"
+        boolean is_active
+        datetime created_at
+    }
+
+    t_student {
+        int id PK
+        int user_id FK "UK -> t_user.id"
+        string student_code UK
+        string full_name
+        string school_name
+        string grade
+        string class_name
+        datetime created_at
+    }
+
+    t_teacher {
+        int id PK
+        int user_id FK "UK -> t_user.id"
+        string teacher_code UK
+        string full_name
+        string school_name
+        datetime created_at
+    }
+
+    t_subject {
+        int id PK
+        string code UK
+        string name
+        string description
+        boolean is_active
+        datetime created_at
+    }
+
+    t_question {
+        int id PK
+        int subject_id FK
+        text question_text
+        string question_type
+        string difficulty
+        string correct_answer "dead column, tidak dipakai app"
+        text explanation
+        float points
+        boolean is_active
+        int created_by FK "nullable -> t_user.id"
+        datetime created_at
+    }
+
+    t_question_option {
+        int id PK
+        int question_id FK
+        string option_code "UK bareng question_id"
+        text option_text
+        boolean is_correct
+    }
+
+    t_tryout {
+        int id PK
+        string title
+        text description
+        int subject_id FK
+        string grade
+        int duration_minutes
+        int total_questions
+        float max_score
+        string difficulty "direpurpose jadi Keterangan bebas"
+        int created_by FK
+        boolean is_active
+        datetime created_at
+    }
+
+    t_tryout_question {
+        int id PK
+        int tryout_id FK "UK bareng question_id & question_number"
+        int question_id FK
+        int question_number
+        float points
+    }
+
+    t_attempt {
+        int id PK
+        int student_id FK
+        int tryout_id FK
+        datetime started_at
+        datetime finished_at
+        string status
+        float score
+        int correct_count
+        int wrong_count
+        int unanswered_count
+        datetime created_at
+    }
+
+    t_answer {
+        int id PK
+        int attempt_id FK "UK bareng question_id"
+        int question_id FK
+        string selected_option
+        boolean is_correct
+        float points_earned
+        datetime answered_at
+    }
+
+    t_result {
+        int id PK
+        int attempt_id FK UK
+        int total_questions
+        int correct_count
+        int wrong_count
+        int unanswered_count
+        float score
+        float percentage
+        boolean passed
+        datetime completed_at
+    }
+
+    t_app_setting {
+        string key PK
+        string value
+        datetime updated_at
+    }

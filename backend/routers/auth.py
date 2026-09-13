@@ -224,10 +224,10 @@ def change_password(
     # Validasi password baru
     # -----------------------------------------------------
 
-    if len(password_data.new_password) < 8:
+    if len(password_data.new_password) < 6:
         raise HTTPException(
             status_code=400,
-            detail="Password baru minimal 8 karakter"
+            detail="Password baru minimal 6 karakter"
         )
 
     # -----------------------------------------------------

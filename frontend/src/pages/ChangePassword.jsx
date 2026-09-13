@@ -28,8 +28,8 @@ function ChangePassword() {
       return;
     }
 
-    if (newPassword.length < 8) {
-      setError("Password baru minimal 8 karakter");
+    if (newPassword.length < 6) {
+      setError("Password baru minimal 6 karakter");
       return;
     }
 
@@ -128,7 +128,7 @@ function ChangePassword() {
                   type="password"
                   value={newPassword}
                   onChange={(e) => setNewPassword(e.target.value)}
-                  placeholder="Minimal 8 karakter"
+                  placeholder="Minimal 6 karakter"
                   autoComplete="new-password"
                   required
                 />

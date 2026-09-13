@@ -10,7 +10,7 @@ class UserCreate(BaseModel):
 
     username: str = Field(min_length=3)
 
-    password: str = Field(min_length=8)
+    password: str = Field(min_length=6)
 
     full_name: str | None = None
 
@@ -80,7 +80,7 @@ class UserUpdate(BaseModel):
 # ==========================================
 
 class PasswordReset(BaseModel):
-    new_password: str = Field(min_length=8)
+    new_password: str = Field(min_length=6)
 
 class ChangePassword(BaseModel):
     current_password: str
@@ -189,6 +189,72 @@ class AIQuestionGenerateResponse(BaseModel):
     # error) — dalam kasus gagal, generate soal TETAP lanjut
     # apa adanya, cuma tanpa jaminan tambahan ini.
     consistency_warning: str | None = None
+
+
+# ==========================================
+# IMPOR SOAL DARI DOKUMEN (PDF/DOCX/TXT)
+#
+# BEDA dari AIQuestionGenerateResponse di atas: fitur ini TIDAK
+# meminta AI membuat soal baru dari materi, melainkan MEMBACA
+# ULANG soal yang SUDAH ADA di dalam dokumen yang diupload guru
+# (mis. file bank soal lama), lalu menstrukturkannya ke format
+# yang dipakai aplikasi ini — supaya guru tidak perlu mengetik
+# ulang manual satu-satu.
+# ==========================================
+
+class AIExtractedQuestion(BaseModel):
+    question_text: str
+    question_type: str = "MULTIPLE_CHOICE"
+    difficulty: str = "MEDIUM"
+    explanation: str | None = None
+    points: float = 1
+    options: list[QuestionOptionCreate]
+
+    # Diisi kalau hasil ekstraksi untuk soal ini punya kejanggalan
+    # ringan yang TIDAK sampai membuatnya ditolak (mis. jumlah opsi
+    # kurang dari 5 di dokumen aslinya) — guru tetap bisa
+    # memeriksa/melengkapi manual sebelum menyimpan, alih-alih soal
+    # itu didiamkan hilang begitu saja dari hasil ekstraksi.
+    warning: str | None = None
+
+
+class AIDocumentChunk(BaseModel):
+    chunk_text: str
+
+    # Perkiraan jumlah soal yang "dijanjikan" potongan ini (dari
+    # jumlah blok penomoran yang terdeteksi saat dokumen dipecah di
+    # backend). Dikirim balik oleh frontend saat memanggil
+    # /process-chunk untuk potongan yang sama, dipakai backend
+    # menghitung skipped_count yang akurat.
+    expected_count: int = 0
+
+
+class AIDocumentPrepareResponse(BaseModel):
+    subject_id: int
+    subject_name: str
+
+    # Daftar potongan teks yang HARUS diproses frontend satu per
+    # satu lewat POST /questions/ai-extract-document/process-chunk
+    # (satu potongan = satu panggilan AI). Endpoint yang
+    # mengembalikan ini SENGAJA tidak memanggil AI sama sekali,
+    # jadi cepat & tidak berisiko timeout.
+    chunks: list[AIDocumentChunk]
+
+
+class AIChunkProcessRequest(BaseModel):
+    subject_id: int
+    chunk_text: str
+    expected_count: int = 0
+
+
+class AIChunkProcessResponse(BaseModel):
+    questions: list[AIExtractedQuestion]
+
+    # Jumlah blok soal DI POTONGAN INI yang gagal total di-parse
+    # jadi struktur valid dan karena itu tidak ikut muncul di
+    # `questions`. Frontend menjumlahkan angka ini dari semua
+    # potongan untuk ditampilkan ke guru.
+    skipped_count: int = 0
 
 
 # ==========================================

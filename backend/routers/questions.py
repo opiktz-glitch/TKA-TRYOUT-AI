@@ -3,10 +3,11 @@ import logging
 import random
 import re
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from sqlalchemy.orm import Session
 
 import ai_providers
+import document_parser
 from database import get_db
 from models import (
     Question,
@@ -23,7 +24,12 @@ from schemas import (
     QuestionResponse,
     AIQuestionGenerateRequest,
     AIQuestionGenerateResponse,
-    AIPromptPreviewResponse
+    AIPromptPreviewResponse,
+    AIExtractedQuestion,
+    AIDocumentChunk,
+    AIDocumentPrepareResponse,
+    AIChunkProcessRequest,
+    AIChunkProcessResponse
 )
 from dependencies import require_role
 
@@ -50,8 +56,7 @@ ALLOWED_OPTIONS = [
     "A",
     "B",
     "C",
-    "D",
-    "E"
+    "D"
 ]
 
 
@@ -85,10 +90,13 @@ def validate_question_data(question_data):
             detail="Bobot soal harus lebih besar dari 0"
         )
 
-    if len(question_data.options) != 5:
+    if len(question_data.options) != len(ALLOWED_OPTIONS):
         raise HTTPException(
             status_code=400,
-            detail="Soal pilihan ganda harus memiliki 5 pilihan"
+            detail=(
+                "Soal pilihan ganda harus memiliki "
+                f"{len(ALLOWED_OPTIONS)} pilihan"
+            )
         )
 
     option_codes = []
@@ -125,7 +133,7 @@ def validate_question_data(question_data):
     if set(option_codes) != set(ALLOWED_OPTIONS):
         raise HTTPException(
             status_code=400,
-            detail="Pilihan harus terdiri dari A, B, C, D, dan E"
+            detail="Pilihan harus terdiri dari A, B, C, dan D"
         )
 
     if correct_count != 1:
@@ -303,12 +311,12 @@ Buatkan SATU soal pilihan ganda dengan ketentuan berikut:
 - Format Teks: Buatlah sebuah teks bacaan nonfiksi atau fiksi pendek yang utuh (MAKSIMAL 2 kalimat, jangan lebih) di dalam question_text, diikuti dengan kalimat tanya yang jelas di bagian akhir teks. Hindari kalimat pembuka yang kaku seperti "Baca teks berikut:".
 - Kualitas Bahasa: Menggunakan bahasa Indonesia baku, logis, dan ramah anak.
 - Notasi Matematika: JANGAN gunakan notasi LaTeX sama sekali (tanda $, \\frac{{a}}{{b}}, \\times, \\div, \\sqrt, \\^, dan sejenisnya) di question_text maupun options, karena teks ini ditampilkan APA ADANYA ke siswa tanpa ada yang merender LaTeX. Tulis pecahan dan operasi hitung dalam bentuk teks biasa yang mudah dibaca siswa SD, misalnya "2 1/4 bagian" (bukan "$2 \\frac{{1}}{{4}}$"), "3 x 4" (bukan "3 \\times 4"), "12 : 3" (bukan "12 \\div 3"). Untuk kuadrat/pangkat, pakai simbol superscript langsung seperti "5\u00b2" atau eja "5 pangkat 2" / "5 kuadrat" (bukan "5^2" atau "$5^2$").
-- Pilihan Jawaban: Kelima pilihan (A-E) harus berisi teks yang BERBEDA satu sama lain, jangan ada dua pilihan dengan isi yang sama persis atau hanya beda kata sedikit tapi maknanya identik.
+- Pilihan Jawaban: Keempat pilihan (A-D) harus berisi teks yang BERBEDA satu sama lain, jangan ada dua pilihan dengan isi yang sama persis atau hanya beda kata sedikit tapi maknanya identik.
 {instruction_line}
 
-Soal harus memiliki tepat 5 pilihan jawaban dengan kode A, B, C, D, E, dan hanya SATU pilihan yang benar. Sertakan juga pembahasan singkat yang menjelaskan kenapa jawaban itu benar.
+Soal harus memiliki tepat 4 pilihan jawaban dengan kode A, B, C, D, dan hanya SATU pilihan yang benar. Sertakan juga pembahasan singkat yang menjelaskan kenapa jawaban itu benar.
 
-PENTING - urutan berpikir: Tentukan dan HITUNG dulu jawaban yang benar secara matematis/logis SEBELUM menuliskan seluruh pilihan (A-E). Setelah itu, isi "correct_answer_text" dengan teks jawaban benar itu (harus SAMA PERSIS, kata demi kata, dengan salah satu "option_text" di bawah) — field ini dipakai sistem untuk pengecekan konsistensi otomatis, jadi wajib identik.
+PENTING - urutan berpikir: Tentukan dan HITUNG dulu jawaban yang benar secara matematis/logis SEBELUM menuliskan seluruh pilihan (A-D). Setelah itu, isi "correct_answer_text" dengan teks jawaban benar itu (harus SAMA PERSIS, kata demi kata, dengan salah satu "option_text" di bawah) — field ini dipakai sistem untuk pengecekan konsistensi otomatis, jadi wajib identik.
 
 Jawab HANYA dengan JSON valid, tanpa teks lain, tanpa markdown, dengan format persis seperti ini:
 {{
@@ -318,8 +326,7 @@ Jawab HANYA dengan JSON valid, tanpa teks lain, tanpa markdown, dengan format pe
     {{"option_code": "A", "option_text": "...", "is_correct": false}},
     {{"option_code": "B", "option_text": "...", "is_correct": false}},
     {{"option_code": "C", "option_text": "...", "is_correct": true}},
-    {{"option_code": "D", "option_text": "...", "is_correct": false}},
-    {{"option_code": "E", "option_text": "...", "is_correct": false}}
+    {{"option_code": "D", "option_text": "...", "is_correct": false}}
   ],
   "explanation": "pembahasan singkat di sini"
 }}"""
@@ -713,7 +720,7 @@ async def generate_question_ai(
     # -----------------------------------------------------
     # Validasi bentuk hasil AI. Guru tetap akan memeriksa &
     # bisa mengedit semuanya di form sebelum menyimpan, tapi
-    # kita pastikan dulu strukturnya (5 opsi A-E) benar supaya
+    # kita pastikan dulu strukturnya (4 opsi A-D) benar supaya
     # tidak ditolak lagi saat disimpan lewat endpoint biasa.
     # -----------------------------------------------------
 
@@ -730,13 +737,16 @@ async def generate_question_ai(
 
     raw_options = ai_result.get("options", [])
 
-    if not isinstance(raw_options, list) or len(raw_options) != 5:
+    if (
+        not isinstance(raw_options, list)
+        or len(raw_options) != len(ALLOWED_OPTIONS)
+    ):
 
         raise HTTPException(
             status_code=502,
             detail=(
-                "AI tidak menghasilkan 5 pilihan jawaban. "
-                "Coba generate ulang."
+                f"AI tidak menghasilkan {len(ALLOWED_OPTIONS)} pilihan "
+                "jawaban. Coba generate ulang."
             )
         )
 
@@ -816,7 +826,7 @@ async def generate_question_ai(
         raise HTTPException(
             status_code=502,
             detail=(
-                "Pilihan jawaban dari AI tidak lengkap (harus A-E). "
+                "Pilihan jawaban dari AI tidak lengkap (harus A-D). "
                 "Coba generate ulang."
             )
         )
@@ -842,7 +852,7 @@ async def generate_question_ai(
         )
 
     # -----------------------------------------------------
-    # Acak urutan opsi & tulis ulang kode A-E berdasarkan urutan
+    # Acak urutan opsi & tulis ulang kode A-D berdasarkan urutan
     # baru itu. Tanpa ini, posisi jawaban benar mengikuti apa
     # adanya keluaran AI, yang cenderung bias ke posisi tertentu
     # (mis. sering di C) — siswa bisa menebak pola tanpa paham
@@ -893,6 +903,360 @@ async def generate_question_ai(
         points=1,
         options=options,
         consistency_warning=consistency_warning,
+    )
+
+
+# =========================================================
+# IMPOR SOAL DARI DOKUMEN (PDF/DOCX/TXT)
+#
+# BEDA dari generate_question_ai() di atas: di sini AI TIDAK
+# diminta membuat soal baru, hanya membaca ulang teks yang
+# diupload guru dan menstrukturkannya. Dipecah jadi beberapa
+# chunk (lihat document_parser.py) supaya dokumen berisi banyak
+# soal tidak melebihi batas konteks provider AI (terutama Ollama
+# lokal, num_ctx-nya kecil) dalam satu panggilan.
+#
+# Pendekatan di sini SENGAJA lebih longgar (lenient) dibanding
+# generate_question_ai(): kalau satu soal hasil ekstraksi kurang
+# lengkap (mis. opsi jawaban kurang dari 5, atau jawaban benar
+# tidak terdeteksi jelas dari dokumen aslinya), soal itu TETAP
+# dikembalikan dengan field `warning` terisi — bukan langsung
+# ditolak — karena kualitas dokumen sumber sepenuhnya di luar
+# kendali sistem. Guru tetap memeriksa/melengkapi tiap soal di
+# layar review sebelum benar-benar disimpan lewat endpoint
+# POST /api/questions biasa (yang validasinya tetap ketat).
+# =========================================================
+
+def _get_active_subject_or_404(db: Session, subject_id: int) -> Subject:
+    """
+    Dipakai KEDUA endpoint baru di bawah (prepare & process-chunk)
+    supaya validasi mata pelajaran konsisten di keduanya —
+    process_document_chunk() tidak bisa mengandalkan hasil validasi
+    dari prepare_document_extraction() karena keduanya request
+    HTTP terpisah (stateless), jadi validasinya perlu diulang.
+    """
+
+    subject = (
+        db.query(Subject)
+        .filter(
+            Subject.id == subject_id
+        )
+        .first()
+    )
+
+    if not subject:
+
+        raise HTTPException(
+            status_code=404,
+            detail="Mata pelajaran tidak ditemukan"
+        )
+
+    if not subject.is_active:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Mata pelajaran tidak aktif"
+        )
+
+    return subject
+
+
+def build_document_extract_prompt(subject_name: str, chunk_text: str) -> str:
+
+    return f"""Anda sedang membantu seorang guru mata pelajaran {subject_name} memindahkan soal-soal PILIHAN GANDA yang SUDAH ADA di sebuah dokumen lama ke sistem baru.
+
+PENTING: Anda TIDAK membuat soal baru. Tugas Anda HANYA membaca teks di bawah ini dan menyalin ulang setiap soal pilihan ganda yang benar-benar ADA di dalamnya, apa adanya, ke dalam format JSON. Jangan mengarang, mengubah, atau menambah isi soal/opsi/pembahasan.
+
+Teks dokumen (satu potongan, mungkin berisi beberapa soal):
+---
+{chunk_text}
+---
+
+Untuk SETIAP soal pilihan ganda yang Anda temukan di teks di atas (bisa 0 kalau memang tidak ada soal valid di potongan ini):
+- Salin teks soalnya persis seperti di dokumen ke "question_text".
+- Salin SEMUA pilihan jawaban yang ada (boleh kurang dari 4 kalau memang begitu di dokumen aslinya) ke "options", masing-masing dengan "option_code" (huruf sesuai dokumen, atau A/B/C/D berurutan kalau dokumen tidak memberi huruf) dan "option_text".
+- Kalau dokumen menyertakan kunci jawaban (mis. tertulis "Jawaban: C" atau huruf yang ditandai tebal/khusus), tandai opsi itu dengan "is_correct": true. Kalau TIDAK ada info kunci jawaban yang jelas di teks, biarkan SEMUA opsi "is_correct": false — jangan menebak.
+- Kalau ada pembahasan/kunci penjelasan di dokumen, salin ke "explanation". Kalau tidak ada, isi string kosong.
+
+Jawab HANYA dengan JSON valid, tanpa teks lain, tanpa markdown, format persis seperti ini:
+{{
+  "questions": [
+    {{
+      "question_text": "...",
+      "options": [
+        {{"option_code": "A", "option_text": "...", "is_correct": false}}
+      ],
+      "explanation": ""
+    }}
+  ]
+}}"""
+
+
+def _normalize_extracted_options(
+    raw_options,
+) -> tuple[list[dict], str | None]:
+    """
+    Versi LONGGAR dari validasi opsi di generate_question_ai(): tidak
+    pernah melempar exception, selalu mengembalikan tepat
+    len(ALLOWED_OPTIONS) slot opsi A-D (dilengkapi placeholder kosong
+    kalau dokumen sumber kurang dari itu) beserta pesan `warning`
+    kalau ada yang perlu diperiksa manual oleh guru.
+    """
+
+    warnings: list[str] = []
+
+    options_by_code: dict[str, dict] = {}
+
+    if isinstance(raw_options, list):
+
+        for raw_option in raw_options:
+
+            if not isinstance(raw_option, dict):
+                continue
+
+            code = str(
+                raw_option.get("option_code", "")
+            ).strip().upper()
+
+            text = _clean_ai_math_notation(
+                str(raw_option.get("option_text", "")).strip()
+            )
+
+            if (
+                code not in ALLOWED_OPTIONS
+                or not text
+                or code in options_by_code
+            ):
+                continue
+
+            options_by_code[code] = {
+                "option_code": code,
+                "option_text": text,
+                "is_correct": bool(raw_option.get("is_correct", False)),
+            }
+
+    missing_codes = [
+        code for code in ALLOWED_OPTIONS if code not in options_by_code
+    ]
+
+    if missing_codes:
+
+        warnings.append(
+            "Pilihan "
+            + ", ".join(missing_codes)
+            + " tidak ditemukan di dokumen, lengkapi manual."
+        )
+
+    correct_count = sum(
+        1 for option in options_by_code.values() if option["is_correct"]
+    )
+
+    if correct_count != 1:
+
+        # Jangan menebak jawaban benar kalau dokumen tidak
+        # memberikan info yang jelas / ambigu (lebih dari satu opsi
+        # ditandai benar). Semua opsi dikembalikan is_correct=False
+        # supaya guru WAJIB menandai manual, alih-alih diam-diam
+        # memakai tebakan yang bisa salah.
+        for option in options_by_code.values():
+            option["is_correct"] = False
+
+        warnings.append(
+            "Jawaban benar tidak terdeteksi dengan pasti dari "
+            "dokumen, tandai manual sebelum menyimpan."
+        )
+
+    ordered_options = [
+        options_by_code.get(
+            code,
+            {"option_code": code, "option_text": "", "is_correct": False},
+        )
+        for code in ALLOWED_OPTIONS
+    ]
+
+    warning_text = " ".join(warnings) if warnings else None
+
+    return ordered_options, warning_text
+
+
+@router.post(
+    "/ai-extract-document/prepare",
+    response_model=AIDocumentPrepareResponse
+)
+async def prepare_document_extraction(
+    subject_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_role("ADMIN", "GURU")
+    )
+):
+    """
+    LANGKAH 1 dari 2 (lihat process_document_chunk di bawah untuk
+    langkah 2). Endpoint ini HANYA membaca file & memecahnya jadi
+    beberapa potongan teks — TIDAK memanggil AI sama sekali, jadi
+    cepat dan tidak berisiko timeout. Guru upload file SEKALI di
+    sini, lalu frontend memproses tiap potongan teks yang
+    dikembalikan satu-per-satu lewat /ai-extract-document/process-chunk
+    (JSON biasa, bukan upload file lagi).
+
+    Dipecah jadi 2 endpoint (bukan 1 seperti sebelumnya) supaya
+    kalau AI gagal/lambat di tengah proses, hasil dari potongan
+    yang SUDAH selesai tidak ikut hilang — masing-masing potongan
+    adalah request terpisah, hasilnya langsung diterima frontend
+    begitu selesai.
+    """
+
+    subject = _get_active_subject_or_404(db, subject_id)
+
+    raw_text = await document_parser.extract_text_from_upload(file)
+
+    blocks = document_parser.split_into_question_blocks(raw_text)
+
+    # Ukuran chunk MENYESUAIKAN provider AI yang sedang aktif (kecil
+    # untuk Ollama lokal, besar untuk Gemini cloud) — lihat
+    # ai_providers.get_extract_chunk_chars() untuk alasannya.
+    chunk_chars = ai_providers.get_extract_chunk_chars(db)
+
+    block_groups = document_parser.chunk_blocks(
+        blocks, max_chars_per_chunk=chunk_chars
+    )
+
+    chunks = [
+        AIDocumentChunk(
+            chunk_text="\n\n".join(group),
+            expected_count=len(group),
+        )
+        for group in block_groups
+    ]
+
+    return AIDocumentPrepareResponse(
+        subject_id=subject.id,
+        subject_name=subject.name,
+        chunks=chunks,
+    )
+
+
+@router.post(
+    "/ai-extract-document/process-chunk",
+    response_model=AIChunkProcessResponse
+)
+async def process_document_chunk(
+    payload: AIChunkProcessRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_role("ADMIN", "GURU")
+    )
+):
+    """
+    LANGKAH 2 dari 2. Memproses SATU potongan teks (hasil langkah 1
+    di atas) lewat AI, mengembalikan soal-soal yang berhasil
+    dikenali dari potongan itu saja. Stateless — endpoint ini tidak
+    menyimpan progres apa pun di server, frontend yang bertanggung
+    jawab memanggil endpoint ini berulang kali untuk tiap potongan
+    dan menggabungkan hasilnya di layar.
+
+    Endpoint ini sendiri TIDAK menyimpan soal ke database — sama
+    seperti sebelumnya, guru tetap memeriksa & menekan simpan lewat
+    POST /api/questions per soal di layar review.
+    """
+
+    subject = _get_active_subject_or_404(db, payload.subject_id)
+
+    prompt = build_document_extract_prompt(
+        subject_name=subject.name,
+        chunk_text=payload.chunk_text,
+    )
+
+    try:
+
+        # larger_output=True: satu chunk di sini bisa berisi
+        # BEBERAPA soal sekaligus, beda dari generate_question_ai
+        # yang outputnya selalu 1 soal — lihat penjelasan di
+        # ai_providers.call_ollama_provider/call_gemini_provider.
+        ai_result = await ai_providers.call_active_provider(
+            prompt, db, larger_output=True
+        )
+
+        raw_questions = ai_result.get("questions", [])
+
+        if not isinstance(raw_questions, list):
+            raise ValueError("'questions' bukan berupa list")
+
+    except HTTPException:
+
+        # Provider AI melempar error eksplisit (mis. Ollama tidak
+        # jalan, Gemini API key salah) — ini masalah konfigurasi,
+        # bukan sekadar satu potongan dokumen yang sulit
+        # di-parsing, jadi diteruskan apa adanya supaya guru tahu
+        # akar masalahnya alih-alih melihat hasil kosong yang
+        # membingungkan. Frontend berhenti memproses chunk
+        # berikutnya kalau ini terjadi (lihat QuestionManagement.jsx)
+        # karena kemungkinan besar chunk lain juga akan gagal
+        # dengan alasan yang sama.
+        raise
+
+    except Exception:
+
+        logger.warning(
+            "Gagal mem-parsing hasil AI untuk satu potongan "
+            "dokumen, potongan ini dilewati.",
+            exc_info=True,
+        )
+
+        return AIChunkProcessResponse(
+            questions=[],
+            skipped_count=payload.expected_count,
+        )
+
+    extracted_questions: list[AIExtractedQuestion] = []
+
+    produced_count = 0
+
+    for raw_question in raw_questions:
+
+        if not isinstance(raw_question, dict):
+            continue
+
+        question_text = _clean_ai_math_notation(
+            str(raw_question.get("question_text", "")).strip()
+        )
+
+        if not question_text:
+            continue
+
+        options, options_warning = _normalize_extracted_options(
+            raw_question.get("options", [])
+        )
+
+        explanation = _clean_ai_math_notation(
+            str(raw_question.get("explanation", "")).strip()
+        ) or None
+
+        extracted_questions.append(
+            AIExtractedQuestion(
+                question_text=question_text,
+                difficulty="MEDIUM",
+                explanation=explanation,
+                points=1,
+                options=options,
+                warning=options_warning,
+            )
+        )
+
+        produced_count += 1
+
+    # Perkiraan kasar: kalau AI menghasilkan soal lebih sedikit dari
+    # jumlah blok yang "dijanjikan" chunk ini (expected_count, dari
+    # langkah 1), anggap sisanya gagal terdeteksi (mis. blok itu
+    # ternyata bukan soal PG, atau AI melewatkannya). Bukan angka
+    # pasti, tapi cukup untuk memberi sinyal ke guru bahwa ada
+    # bagian dokumen yang perlu dicek manual.
+    skipped_count = max(0, payload.expected_count - produced_count)
+
+    return AIChunkProcessResponse(
+        questions=extracted_questions,
+        skipped_count=skipped_count,
     )
 
 

@@ -340,8 +340,8 @@ function UserManagement() {
       return;
     }
 
-    if (newPassword.length < 8) {
-      setPasswordError("Password minimal 8 karakter");
+    if (newPassword.length < 6) {
+      setPasswordError("Password minimal 6 karakter");
       return;
     }
 
@@ -958,7 +958,7 @@ function UserManagement() {
                     onChange={(e) =>
                       setNewPassword(e.target.value)
                     }
-                    placeholder="Minimal 8 karakter"
+                    placeholder="Minimal 6 karakter"
                     autoComplete="new-password"
                     disabled={passwordLoading}
                     required
@@ -1040,15 +1040,15 @@ function UserManagement() {
 
                 <div
                   className={
-                    newPassword.length >= 8
+                    newPassword.length >= 6
                       ? "rule-valid"
                       : "rule-invalid"
                   }
                 >
-                  {newPassword.length >= 8
+                  {newPassword.length >= 6
                     ? <IconCheck size={13} style={{ verticalAlign: "-2px" }} />
                     : "○"}{" "}
-                  Minimal 8 karakter
+                  Minimal 6 karakter
                 </div>
 
 
