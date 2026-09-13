@@ -2,11 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 
 import Sidebar from "../components/Sidebar";
 import Header from "../components/Header";
-import { IconEdit, IconTrash, IconCheck } from "../components/Icons";
+import { IconEdit, IconTrash, IconCheck, IconEye } from "../components/Icons";
 import {
   getSubjects,
   getTryouts,
   getTryout,
+  getTryoutReview,
   getAvailableQuestions,
   createTryout,
   updateTryout,
@@ -52,6 +53,12 @@ function TryoutManagement() {
   const [showModal, setShowModal] = useState(false);
   const [editingTryout, setEditingTryout] = useState(null);
 
+  const [showReviewModal, setShowReviewModal] = useState(false);
+  const [reviewData, setReviewData] = useState(null);
+  const [loadingReview, setLoadingReview] = useState(false);
+  const [reviewError, setReviewError] = useState("");
+  const [reviewTab, setReviewTab] = useState("soal");
+
   // =====================================================
   // FILTER
   // =====================================================
@@ -60,6 +67,14 @@ function TryoutManagement() {
   const [subjectFilter, setSubjectFilter] = useState("");
   const [difficultyFilter, setDifficultyFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+
+  // =====================================================
+  // PAGINATION (Paket Tryout)
+  // =====================================================
+
+  const TRYOUTS_PER_PAGE = 10;
+
+  const [currentPage, setCurrentPage] = useState(1);
 
   // =====================================================
   // MESSAGE
@@ -286,6 +301,48 @@ function TryoutManagement() {
     setAvailableQuestions([]);
     setFormError("");
     setFormSuccess("");
+  }
+
+  // =====================================================
+  // OPEN REVIEW MODAL (lihat soal & jawaban)
+  // =====================================================
+
+  async function openReviewModal(tryout) {
+    try {
+      setReviewError("");
+      setReviewData(null);
+      setReviewTab("soal");
+      setShowReviewModal(true);
+      setLoadingReview(true);
+
+      const data = await getTryoutReview(tryout.id);
+
+      setReviewData(data);
+    } catch (err) {
+      console.error("LOAD TRYOUT REVIEW ERROR:", err);
+      setReviewError(err.message || "Gagal mengambil data review soal");
+    } finally {
+      setLoadingReview(false);
+    }
+  }
+
+  // =====================================================
+  // CLOSE REVIEW MODAL
+  // =====================================================
+
+  function closeReviewModal() {
+    setShowReviewModal(false);
+    setReviewData(null);
+    setReviewError("");
+    setReviewTab("soal");
+  }
+
+  // =====================================================
+  // PRINT REVIEW
+  // =====================================================
+
+  function handlePrintReview() {
+    window.print();
   }
 
   // =====================================================
@@ -634,6 +691,31 @@ function TryoutManagement() {
     statusFilter,
   ]);
 
+  // Reset ke halaman 1 setiap kali pencarian/filter berubah, supaya
+  // tidak "nyangkut" di halaman yang sudah tidak relevan.
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, subjectFilter, difficultyFilter, statusFilter]);
+
+  const totalPages = Math.max(
+    1,
+    Math.ceil(filteredTryouts.length / TRYOUTS_PER_PAGE)
+  );
+
+  // Kalau halaman aktif jadi lebih besar dari total halaman yang ada
+  // (mis. setelah tryout terakhir di halaman itu dihapus), mundurkan
+  // otomatis ke halaman terakhir yang valid.
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
+  const paginatedTryouts = useMemo(() => {
+    const start = (currentPage - 1) * TRYOUTS_PER_PAGE;
+    return filteredTryouts.slice(start, start + TRYOUTS_PER_PAGE);
+  }, [filteredTryouts, currentPage]);
+
   // =====================================================
   // BANK SOAL — FILTER TINGKAT KESULITAN (di dalam modal)
   //
@@ -761,6 +843,7 @@ function TryoutManagement() {
                 <table className="user-table">
                   <thead>
                     <tr>
+                      <th className="align-center">No</th>
                       <th>ID</th>
                       <th>Judul Tryout</th>
                       <th>Mata Pelajaran</th>
@@ -769,13 +852,17 @@ function TryoutManagement() {
                       <th>Durasi</th>
                       <th>Keterangan</th>
                       <th>Status</th>
-                      <th>Aksi</th>
+                      <th className="sticky-col">Aksi</th>
                     </tr>
                   </thead>
 
                   <tbody>
-                    {filteredTryouts.map((tryout) => (
+                    {paginatedTryouts.map((tryout, index) => (
                       <tr key={tryout.id}>
+                        <td className="align-center">
+                          {(currentPage - 1) * TRYOUTS_PER_PAGE + index + 1}
+                        </td>
+
                         <td>{tryout.id}</td>
 
                         <td>
@@ -811,7 +898,7 @@ function TryoutManagement() {
                           )}
                         </td>
 
-                        <td>
+                        <td className="sticky-col">
                           <div className="action-buttons">
                             <button
                               className="edit-button"
@@ -819,6 +906,14 @@ function TryoutManagement() {
                               title="Edit"
                             >
                               <IconEdit size={16} />
+                            </button>
+
+                            <button
+                              className="review-button"
+                              onClick={() => openReviewModal(tryout)}
+                              title="Review Soal"
+                            >
+                              <IconEye size={16} />
                             </button>
 
                             <button
@@ -844,6 +939,103 @@ function TryoutManagement() {
                     statusFilter
                       ? "Paket tryout tidak ditemukan."
                       : "Belum ada paket tryout."}
+                  </div>
+                )}
+
+                {filteredTryouts.length > 0 && (
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      flexWrap: "wrap",
+                      gap: 12,
+                      padding: "14px 4px 4px",
+                    }}
+                  >
+                    <span style={{ fontSize: 13, color: "#6b7280" }}>
+                      Menampilkan{" "}
+                      {(currentPage - 1) * TRYOUTS_PER_PAGE + 1}
+                      {"–"}
+                      {Math.min(
+                        currentPage * TRYOUTS_PER_PAGE,
+                        filteredTryouts.length
+                      )}{" "}
+                      dari {filteredTryouts.length} tryout
+                    </span>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                        disabled={currentPage === 1}
+                      >
+                        Sebelumnya
+                      </button>
+
+                      {Array.from({ length: totalPages }, (_, i) => i + 1)
+                        // Kalau halamannya banyak, cukup tampilkan halaman
+                        // pertama, terakhir, dan beberapa di sekitar halaman
+                        // aktif — sisanya diringkas jadi "…" supaya baris
+                        // nomor halaman tidak melebar tak terbatas.
+                        .filter((page) => {
+                          if (totalPages <= 7) return true;
+                          return (
+                            page === 1 ||
+                            page === totalPages ||
+                            Math.abs(page - currentPage) <= 1
+                          );
+                        })
+                        .reduce((acc, page, idx, arr) => {
+                          if (idx > 0 && page - arr[idx - 1] > 1) {
+                            acc.push("ellipsis-" + page);
+                          }
+                          acc.push(page);
+                          return acc;
+                        }, [])
+                        .map((item) =>
+                          typeof item === "string" ? (
+                            <span
+                              key={item}
+                              style={{ padding: "0 4px", color: "#9ca3af", fontSize: 13 }}
+                            >
+                              …
+                            </span>
+                          ) : (
+                            <button
+                              key={item}
+                              type="button"
+                              onClick={() => setCurrentPage(item)}
+                              style={{
+                                minWidth: 32,
+                                height: 32,
+                                borderRadius: 6,
+                                border: "1px solid var(--line)",
+                                background:
+                                  item === currentPage ? "var(--accent)" : "white",
+                                color: item === currentPage ? "white" : "#374151",
+                                fontWeight: item === currentPage ? 600 : 500,
+                                fontSize: 13,
+                                cursor: "pointer",
+                              }}
+                            >
+                              {item}
+                            </button>
+                          )
+                        )}
+
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() =>
+                          setCurrentPage((p) => Math.min(totalPages, p + 1))
+                        }
+                        disabled={currentPage === totalPages}
+                      >
+                        Berikutnya
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -1398,6 +1590,192 @@ function TryoutManagement() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================
+          MODAL REVIEW SOAL (tampilan seperti halaman cetak/PDF)
+      ===================================================== */}
+
+      {showReviewModal && (
+        <div className="modal-overlay review-modal-overlay">
+          <div
+            className="modal review-modal no-print-overlay"
+            style={{ width: "950px", maxWidth: "96vw" }}
+          >
+            <div className="modal-header no-print">
+              <div>
+                <h2>Review Soal Tryout</h2>
+                <p>
+                  Pratinjau soal yang akan ditampilkan dalam tryout ini.
+                  Gunakan tab di bawah untuk melihat soal polos atau kunci
+                  jawaban & pembahasan.
+                </p>
+              </div>
+
+              <div style={{ display: "flex", gap: "8px" }}>
+                {reviewData && !loadingReview && !reviewError && (
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={handlePrintReview}
+                  >
+                    Cetak / PDF
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  className="modal-close"
+                  onClick={closeReviewModal}
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+
+            {!loadingReview && !reviewError && reviewData && (
+              <div className="review-tabs no-print">
+                <button
+                  type="button"
+                  className={
+                    reviewTab === "soal"
+                      ? "review-tab-button active"
+                      : "review-tab-button"
+                  }
+                  onClick={() => setReviewTab("soal")}
+                >
+                  Soal
+                </button>
+
+                <button
+                  type="button"
+                  className={
+                    reviewTab === "jawaban"
+                      ? "review-tab-button active"
+                      : "review-tab-button"
+                  }
+                  onClick={() => setReviewTab("jawaban")}
+                >
+                  Jawaban &amp; Pembahasan
+                </button>
+              </div>
+            )}
+
+            {loadingReview && (
+              <div className="loading-message">Memuat soal...</div>
+            )}
+
+            {!loadingReview && reviewError && (
+              <div className="error-message">{reviewError}</div>
+            )}
+
+            {!loadingReview && !reviewError && reviewData && reviewTab === "soal" && (
+              <div className="review-print-page">
+                <div className="review-print-header">
+                  <h3>{reviewData.title}</h3>
+                  <div className="review-print-meta">
+                    <span>Mapel: {reviewData.subject_name}</span>
+                    <span>Kelas: {reviewData.grade || "-"}</span>
+                    <span>Durasi: {reviewData.duration_minutes} menit</span>
+                    <span>Jumlah Soal: {reviewData.total_questions}</span>
+                  </div>
+                </div>
+
+                <div className="review-print-questions">
+                  {reviewData.questions.map((question) => (
+                    <div
+                      key={question.question_id}
+                      className="review-print-question"
+                    >
+                      <div className="review-print-question-text">
+                        <span className="review-print-number">
+                          {question.question_number}.
+                        </span>
+                        <span>{question.question_text}</span>
+                      </div>
+
+                      <div className="review-print-options">
+                        {question.options.map((option) => (
+                          <div
+                            key={option.option_code}
+                            className="review-print-option"
+                          >
+                            <span className="review-print-option-code">
+                              {option.option_code}.
+                            </span>
+                            <span>{option.option_text}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+
+                  {reviewData.questions.length === 0 && (
+                    <div className="empty-message">
+                      Paket tryout ini belum memiliki soal.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {!loadingReview && !reviewError && reviewData && reviewTab === "jawaban" && (
+              <div className="review-print-page">
+                <div className="review-print-header">
+                  <h3>{reviewData.title} — Kunci Jawaban &amp; Pembahasan</h3>
+                  <div className="review-print-meta">
+                    <span>Mapel: {reviewData.subject_name}</span>
+                    <span>Kelas: {reviewData.grade || "-"}</span>
+                    <span>Jumlah Soal: {reviewData.total_questions}</span>
+                  </div>
+                </div>
+
+                <div className="review-print-questions">
+                  {reviewData.questions.map((question) => {
+                    const correctOption = question.options.find(
+                      (option) => option.is_correct
+                    );
+
+                    return (
+                      <div
+                        key={question.question_id}
+                        className="review-print-question"
+                      >
+                        <div className="review-print-question-text">
+                          <span className="review-print-number">
+                            {question.question_number}.
+                          </span>
+                          <span>{question.question_text}</span>
+                        </div>
+
+                        <div className="review-answer-correct">
+                          Jawaban:{" "}
+                          <strong>
+                            {correctOption
+                              ? `${correctOption.option_code}. ${correctOption.option_text}`
+                              : "-"}
+                          </strong>
+                        </div>
+
+                        {question.explanation && (
+                          <div className="review-answer-explanation">
+                            <em>Pembahasan:</em> {question.explanation}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {reviewData.questions.length === 0 && (
+                    <div className="empty-message">
+                      Paket tryout ini belum memiliki soal.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

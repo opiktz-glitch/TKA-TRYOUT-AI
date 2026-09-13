@@ -436,7 +436,7 @@ function UserManagement() {
 
             <div>
 
-              <h1>User Management</h1>
+              <h1>Kelola User</h1>
 
               <p>
                 Kelola pengguna aplikasi TKA Tryout

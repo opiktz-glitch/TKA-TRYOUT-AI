@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from dependencies import get_current_user, require_role
-from config import DATABASE_URL, OLLAMA_BASE_URL, GEMINI_BASE_URL, FRONTEND_PORT, BACKEND_PORT
+from config import DATABASE_URL, OLLAMA_BASE_URL, GEMINI_BASE_URL, FRONTEND_PORT, BACKEND_PORT, APP_MODE
 from models import User
 from schemas import NetworkInfoResponse, NetworkAddress
 import ai_providers
@@ -175,6 +175,7 @@ def get_network_info(
         backend_port=BACKEND_PORT,
         addresses=addresses,
         backend_online=True,
+        mode=APP_MODE,
     )
 
 

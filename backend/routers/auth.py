@@ -53,8 +53,23 @@ def _get_recent_failures(key: str) -> list[datetime]:
     cutoff = datetime.utcnow() - timedelta(minutes=LOCKOUT_MINUTES)
     attempts = _failed_attempts.get(key, [])
     attempts = [t for t in attempts if t > cutoff]
-    _failed_attempts[key] = attempts
+
+    if attempts:
+        _failed_attempts[key] = attempts
+    else:
+        # PENTING: hapus key-nya sepenuhnya (bukan cuma diisi list
+        # kosong) begitu semua attempt-nya kedaluwarsa. Tanpa ini,
+        # dict _failed_attempts akan MEMBESAR TANPA BATAS kalau ada
+        # yang mencoba login dengan banyak username acak/berbeda-beda
+        # (username enumeration) — tiap username unik yang pernah
+        # dicoba akan meninggalkan entri kosong permanen di memori
+        # sampai server di-restart. Dengan dihapus di sini, memori
+        # otomatis bersih sendiri untuk username yang sudah tidak
+        # aktif gagal login lagi.
+        _failed_attempts.pop(key, None)
+
     return attempts
+
 
 
 def _register_failure(key: str):

@@ -6,6 +6,7 @@ from models import (
     Tryout,
     TryoutQuestion,
     Question,
+    QuestionOption,
     Subject,
     User,
     Attempt,
@@ -202,6 +203,106 @@ def get_tryout(
         "created_by": tryout.created_by,
         "is_active": tryout.is_active,
         "questions": questions
+    }
+
+
+# =========================================================
+# GET REVIEW SOAL TRYOUT (untuk tombol "Review")
+# =========================================================
+# Menampilkan daftar soal & pilihan jawaban (tanpa pembahasan)
+# dari sebuah paket tryout, dipakai untuk pratinjau seperti
+# halaman cetak/PDF sebelum tryout dipakai siswa.
+
+@router.get("/{tryout_id}/review")
+def get_tryout_review(
+    tryout_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(
+        require_role("ADMIN", "GURU")
+    )
+):
+
+    tryout = (
+        db.query(Tryout)
+        .filter(Tryout.id == tryout_id)
+        .first()
+    )
+
+    if not tryout:
+        raise HTTPException(
+            status_code=404,
+            detail="Tryout tidak ditemukan"
+        )
+
+    subject = (
+        db.query(Subject)
+        .filter(Subject.id == tryout.subject_id)
+        .first()
+    )
+
+    tryout_questions = (
+        db.query(TryoutQuestion)
+        .filter(
+            TryoutQuestion.tryout_id == tryout.id
+        )
+        .order_by(
+            TryoutQuestion.question_number
+        )
+        .all()
+    )
+
+    questions_payload = []
+
+    for tryout_question in tryout_questions:
+
+        question = (
+            db.query(Question)
+            .filter(Question.id == tryout_question.question_id)
+            .first()
+        )
+
+        if not question:
+            continue
+
+        options = (
+            db.query(QuestionOption)
+            .filter(
+                QuestionOption.question_id == question.id
+            )
+            .order_by(
+                QuestionOption.option_code
+            )
+            .all()
+        )
+
+        questions_payload.append({
+            "question_number": tryout_question.question_number,
+            "question_id": question.id,
+            "question_text": question.question_text,
+            "question_type": question.question_type,
+            "points": tryout_question.points,
+            "explanation": question.explanation,
+            "options": [
+                {
+                    "option_code": option.option_code,
+                    "option_text": option.option_text,
+                    "is_correct": option.is_correct,
+                }
+                for option in options
+            ],
+        })
+
+    return {
+        "id": tryout.id,
+        "title": tryout.title,
+        "description": tryout.description,
+        "subject_name": subject.name if subject else "-",
+        "grade": tryout.grade,
+        "duration_minutes": tryout.duration_minutes,
+        "total_questions": tryout.total_questions,
+        "max_score": tryout.max_score,
+        "difficulty": tryout.difficulty,
+        "questions": questions_payload,
     }
 
 

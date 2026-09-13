@@ -164,6 +164,16 @@ if AI_PROVIDER not in ("OLLAMA", "GEMINI"):
 FRONTEND_PORT = int(os.getenv("FRONTEND_PORT") or "5173")
 BACKEND_PORT = int(os.getenv("BACKEND_PORT") or "8000")
 
+# =========================================================
+# APP_MODE — dikirim sebagai environment variable oleh run.py
+# ("development") atau run_server.py ("server"), supaya frontend
+# tahu label mana yang perlu ditampilkan di tab Jaringan halaman
+# Pengaturan Admin ("Server lokal / development" vs
+# "Server sedang berjalan"). Default "development" kalau backend
+# dijalankan manual (misal langsung "uvicorn main:app").
+# =========================================================
+APP_MODE = os.getenv("APP_MODE") or "development"
+
 
 # ==========================================
 # CORS — IZINKAN JUGA IP JARINGAN LOKAL (LAN/WIFI)

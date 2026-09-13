@@ -8,8 +8,14 @@ from fastapi.responses import JSONResponse
 
 import models
 
-from database import Base, engine
-from config import ALLOWED_ORIGINS, CORS_ORIGIN_REGEX
+from database import Base, engine, SessionLocal
+from config import ALLOWED_ORIGINS, CORS_ORIGIN_REGEX, APP_MODE
+
+# Modul auth.py (bukan routers/auth.py) — dipakai HANYA untuk
+# bootstrap_secret_key() di bawah. Diberi alias "core_auth" supaya
+# tidak bentrok dengan "from routers import auth" (routers.auth)
+# yang sudah dipakai di seluruh file ini untuk app.include_router().
+import auth as core_auth
 
 from routers import auth
 from routers import users
@@ -45,6 +51,71 @@ logging.basicConfig(
 
 Base.metadata.create_all(bind=engine)
 
+
+# ==========================================
+# BOOTSTRAP SECRET_KEY (SEKALI SAAT STARTUP)
+#
+# Memastikan SECRET_KEY sudah tersimpan di tabel t_app_setting
+# SEBELUM request pertama masuk — bukan menunggu admin membuka
+# halaman Pengaturan > Keamanan dan klik "Simpan"/"Rotasi" secara
+# manual. Tanpa panggilan ini, aplikasi tetap jalan (ada fallback
+# ke config.SECRET_KEY di auth.get_active_secret_key()), tapi
+# fitur SECRET_KEY dinamis yang sudah dibangun (termasuk enkripsi
+# API key provider AI di ai_providers.py) baru benar-benar "aktif"
+# secara database setelah aksi manual itu — bukan sejak awal
+# instalasi seperti yang dimaksud.
+#
+# Pakai SessionLocal() langsung (bukan Depends(get_db)) karena ini
+# dijalankan di luar siklus request FastAPI, saat modul ini
+# pertama kali di-import oleh uvicorn.
+# ==========================================
+
+def _bootstrap_secret_key_on_startup() -> None:
+
+    db = SessionLocal()
+
+    try:
+
+        core_auth.bootstrap_secret_key(db)
+
+    except Exception:
+
+        # Jangan sampai proses startup server gagal total hanya
+        # karena bootstrap SECRET_KEY error (mis. database belum
+        # siap sepersekian detik). Dicatat ke log supaya tetap
+        # ketahuan, tapi fallback ke config.SECRET_KEY tetap
+        # membuat aplikasi bisa jalan (lihat auth.py).
+        logging.getLogger(__name__).exception(
+            "Gagal bootstrap SECRET_KEY ke database saat startup"
+        )
+
+    finally:
+
+        db.close()
+
+
+_bootstrap_secret_key_on_startup()
+
+
+# ==========================================
+# SEMBUNYIKAN DOKUMENTASI API SAAT PRODUCTION
+#
+# Swagger UI (/docs), ReDoc (/redoc), dan skema mentah
+# (/openapi.json) MEMBOCORKAN seluruh daftar endpoint, bentuk
+# request/response, dan struktur data aplikasi ke siapa pun yang
+# tahu URL-nya — tanpa perlu login. Untuk aplikasi internal/dev
+# ini berguna, tapi untuk platform ujian yang sudah live di
+# internet, sebaiknya tidak diekspos ke publik.
+#
+# Di mode "development" (run.py) & "server" (run_server.py, demo
+# LAN) dokumentasi tetap aktif seperti biasa supaya masih bisa
+# dipakai coba-coba endpoint. Hanya saat APP_MODE=production
+# (Docker/Procfile) ketiganya dimatikan sekaligus dengan
+# menyetel None — cara resmi FastAPI untuk menonaktifkannya.
+# ==========================================
+
+_docs_enabled = APP_MODE != "production"
+
 app = FastAPI(
     title="TZ Login API",
 
@@ -53,7 +124,11 @@ app = FastAPI(
         "Authentication System"
     ),
 
-    version="2.0.0"
+    version="2.0.0",
+
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
 )
 
 

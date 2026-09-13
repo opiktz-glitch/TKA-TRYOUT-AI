@@ -6,11 +6,19 @@ services:
     restart: unless-stopped
     env_file:
       - ./backend/.env
+    environment:
+      - APP_MODE=production
     volumes:
       # Persist database SQLite di luar container supaya tidak
       # hilang saat container di-rebuild/redeploy. Path di dalam
       # container mengikuti backend/database/ (lihat config.py).
       - db_data:/app/database
+      # Sama seperti service "backup" di bawah — supaya backup MANUAL
+      # yang dipicu tombol "Backup Sekarang" di halaman Pengaturan
+      # (jalan di CONTAINER INI, bukan di container "backup") juga
+      # tersimpan ke folder host yang SAMA, bukan ke lokasi terpisah
+      # yang hilang begitu container backend di-rebuild.
+      - ./backend/backups:/app/backups
     ports:
       - "8000:8000"
 
@@ -27,6 +35,51 @@ services:
       - backend
     ports:
       - "5173:80"
+
+  # ==========================================
+  # BACKUP OTOMATIS DATABASE SQLITE
+  #
+  # Pakai image "backend" yang sama (jadi tidak nambah build/
+  # dependency baru), tapi entrypoint-nya diganti jadi loop
+  # sederhana: backup sekali, tidur 24 jam, ulangi. Tidak perlu
+  # setup cron terpisah di dalam container.
+  #
+  # PENTING soal lokasi hasil backup: "db_data" adalah NAMED
+  # VOLUME Docker — kalau volume itu sendiri korup/terhapus,
+  # backup yang disimpan DI DALAM volume yang sama ikut hilang
+  # juga (percuma). Karena itu folder /app/backups di-mount ke
+  # "./backend/backups" (BIND MOUNT ke folder asli di laptop/
+  # server), bukan ke volume Docker lain — supaya hasil backup
+  # benar-benar berada di filesystem host, terpisah total dari
+  # volume database, dan gampang di-zip/upload ke penyimpanan
+  # lain (Google Drive, dsb) secara berkala oleh admin.
+  # ==========================================
+
+  backup:
+    build:
+      context: ./backend
+    container_name: tka_tryout_backup
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      - APP_MODE=production
+      # Backup lebih tua dari sekian hari otomatis dihapus supaya
+      # folder backup tidak terus membesar. Ubah sesuai kebutuhan.
+      - BACKUP_RETENTION_DAYS=14
+    volumes:
+      - db_data:/app/database
+      - ./backend/backups:/app/backups
+    depends_on:
+      - backend
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        echo "[backup] Service backup otomatis aktif, jalan tiap 24 jam."
+        while true; do
+          python scripts/backup_db.py
+          sleep 86400
+        done
 
 volumes:
   db_data:

@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 
 import Sidebar from "../components/Sidebar";
 import Header from "../components/Header";
-import { IconUser, IconKey, IconShield, IconRefresh, IconWifi, IconCheck } from "../components/Icons";
+import { IconUser, IconKey, IconShield, IconRefresh, IconWifi, IconCheck, IconClipboard } from "../components/Icons";
 
 import {
   updateMyAccountProfile,
@@ -15,6 +15,9 @@ import {
   updateSecretKey,
   rotateSecretKey,
   getNetworkInfo,
+  getBackups,
+  createBackupNow,
+  downloadBackup,
 } from "../services/api";
 import { useAuth } from "../auth/AuthContext";
 
@@ -23,6 +26,7 @@ const TABS = [
   { key: "profile", label: "Profil Saya" },
   { key: "ai-model", label: "AI" },
   { key: "security", label: "Keamanan" },
+  { key: "backup", label: "Backup" },
   { key: "network", label: "Jaringan" },
 ];
 
@@ -104,9 +108,36 @@ function AdminSettings() {
   const [copiedUrl, setCopiedUrl] = useState("");
 
 
+  // ======================================================
+  // BACKUP (Pengaturan > Backup)
+  //
+  // Daftar backup database yang sudah ada (dari service Docker
+  // "backup" yang jalan otomatis tiap 24 jam, ATAU dari tombol
+  // "Backup Sekarang" di sini) + tombol untuk membuat backup baru
+  // kapan saja di luar jadwal otomatis, dan tombol download tiap
+  // file backup.
+  // ======================================================
+
+  const [backups, setBackups] = useState([]);
+  const [retentionDays, setRetentionDays] = useState(null);
+  const [backupsLoading, setBackupsLoading] = useState(true);
+  const [backupsError, setBackupsError] = useState("");
+
+  const [creatingBackup, setCreatingBackup] = useState(false);
+  const [backupActionError, setBackupActionError] = useState("");
+  const [backupActionSuccess, setBackupActionSuccess] = useState("");
+
+  const [downloadingFilename, setDownloadingFilename] = useState("");
+
+
   useEffect(() => {
     loadProviders();
     loadSecretKeyStatus();
+    // Dimuat di awal (bukan cuma saat tab "Jaringan" diklik) supaya
+    // kita tahu APP_MODE lebih dulu, untuk memutuskan apakah tab
+    // "Jaringan" perlu ditampilkan sama sekali (disembunyikan kalau
+    // mode "production" — IP LAN tidak relevan di server cloud).
+    loadNetworkInfo();
   }, []);
 
 
@@ -114,7 +145,76 @@ function AdminSettings() {
     if (activeTab === "network") {
       loadNetworkInfo();
     }
+
+    if (activeTab === "backup") {
+      loadBackups();
+    }
   }, [activeTab]);
+
+
+  async function loadBackups() {
+    setBackupsLoading(true);
+    setBackupsError("");
+
+    try {
+      const data = await getBackups();
+      setBackups(data.backups || []);
+      setRetentionDays(data.retention_days);
+    } catch (err) {
+      console.error("GET BACKUPS ERROR:", err);
+      setBackupsError(err.message || "Gagal memuat daftar backup");
+    } finally {
+      setBackupsLoading(false);
+    }
+  }
+
+
+  async function handleCreateBackupNow() {
+    setBackupActionError("");
+    setBackupActionSuccess("");
+
+    try {
+      setCreatingBackup(true);
+
+      const data = await createBackupNow();
+
+      setBackupActionSuccess(data.message);
+
+      // Muat ulang daftar supaya backup baru langsung muncul di
+      // tabel, tanpa admin perlu pindah tab lalu balik lagi.
+      await loadBackups();
+    } catch (err) {
+      console.error("CREATE BACKUP ERROR:", err);
+      setBackupActionError(err.message || "Gagal membuat backup");
+    } finally {
+      setCreatingBackup(false);
+    }
+  }
+
+
+  async function handleDownloadBackup(filename) {
+    setBackupActionError("");
+
+    try {
+      setDownloadingFilename(filename);
+      await downloadBackup(filename);
+    } catch (err) {
+      console.error("DOWNLOAD BACKUP ERROR:", err);
+      setBackupActionError(err.message || "Gagal mengunduh backup");
+    } finally {
+      setDownloadingFilename("");
+    }
+  }
+
+
+  // Format ukuran file (bytes) jadi satuan yang gampang dibaca
+  // (KB/MB) untuk ditampilkan di tabel backup.
+  function formatBytes(bytes) {
+    if (!bytes && bytes !== 0) return "-";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
 
 
   async function loadNetworkInfo() {
@@ -131,6 +231,26 @@ function AdminSettings() {
       setNetworkLoading(false);
     }
   }
+
+  // Tab "Jaringan" disembunyikan sepenuhnya kalau backend berjalan
+  // dalam mode "production" (server cloud) — fitur share IP LAN
+  // tidak relevan di situ. Selama networkInfo belum termuat, tab
+  // tetap ditampilkan dulu (menghindari salah sembunyi sebelum
+  // tahu mode-nya).
+  const visibleTabs = TABS.filter(
+    (tab) => tab.key !== "network" || networkInfo?.mode !== "production"
+  );
+
+  // Kalau tab "Jaringan" sedang aktif tapi ternyata mode-nya
+  // "production" (misal admin sempat klik sebelum data termuat),
+  // otomatis pindah ke tab Profil supaya tidak terjebak di tab
+  // yang sudah disembunyikan.
+  useEffect(() => {
+    if (activeTab === "network" && networkInfo?.mode === "production") {
+      setActiveTab("profile");
+    }
+  }, [activeTab, networkInfo]);
+
 
 
   async function handleCopyUrl(url) {
@@ -433,7 +553,7 @@ function AdminSettings() {
               borderBottom: "1px solid var(--line)",
             }}
           >
-            {TABS.map((tab) => {
+            {visibleTabs.map((tab) => {
               const isActive = activeTab === tab.key;
 
               return (
@@ -1069,6 +1189,126 @@ function AdminSettings() {
           )}
 
           {/* ============================================= */}
+          {/* TAB: BACKUP — BACKUP DATABASE SQLITE           */}
+          {/* ============================================= */}
+
+          {activeTab === "backup" && (
+            <div
+              className="dashboard-card"
+              style={{ maxWidth: "800px", margin: "0 auto", padding: "24px" }}
+            >
+              <h2 style={{ marginTop: 0, marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                <IconClipboard size={18} />
+                Backup Database
+              </h2>
+
+              <p style={{ marginTop: 0, marginBottom: 22, color: "#6b7280", fontSize: 13 }}>
+                Backup otomatis berjalan sendiri tiap 24 jam di server.
+                Gunakan tombol di bawah untuk membuat backup tambahan
+                kapan saja — misalnya sebelum mengganti SECRET_KEY atau
+                menghapus data dalam jumlah besar.
+                {retentionDays != null && (
+                  <> Backup lebih tua dari {retentionDays} hari otomatis dihapus.</>
+                )}
+              </p>
+
+              {backupActionError && (
+                <div className="error-message" style={{ marginBottom: 18 }}>
+                  {backupActionError}
+                </div>
+              )}
+
+              {backupActionSuccess && (
+                <div
+                  className="alert-success"
+                  style={{
+                    backgroundColor: "#d4edda",
+                    color: "#155724",
+                    padding: "10px",
+                    borderRadius: "6px",
+                    fontSize: "13px",
+                    marginBottom: "18px",
+                  }}
+                >
+                  {backupActionSuccess}
+                </div>
+              )}
+
+              <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 22 }}>
+                <button
+                  type="button"
+                  className="primary-button"
+                  disabled={creatingBackup}
+                  onClick={handleCreateBackupNow}
+                >
+                  {creatingBackup ? "Membuat Backup..." : "Backup Sekarang"}
+                </button>
+              </div>
+
+              {backupsError && (
+                <div className="error-message" style={{ marginBottom: 18 }}>
+                  {backupsError}
+                </div>
+              )}
+
+              {backupsLoading ? (
+                <p style={{ color: "#6b7280", fontSize: 13 }}>Memuat daftar backup...</p>
+              ) : backups.length === 0 ? (
+                <p style={{ color: "#6b7280", fontSize: 13 }}>
+                  Belum ada backup. Klik "Backup Sekarang" di atas, atau
+                  tunggu jadwal otomatis berikutnya.
+                </p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {backups.map((backup) => (
+                    <div
+                      key={backup.filename}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 10,
+                        border: "1px solid var(--line)",
+                        borderRadius: 8,
+                        padding: "10px 14px",
+                      }}
+                    >
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div
+                          style={{
+                            fontWeight: 600,
+                            fontSize: 13,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {backup.filename}
+                        </div>
+                        <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
+                          {new Date(backup.created_at).toLocaleString("id-ID")}
+                          {" · "}
+                          {formatBytes(backup.size_bytes)}
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={downloadingFilename === backup.filename}
+                        onClick={() => handleDownloadBackup(backup.filename)}
+                      >
+                        {downloadingFilename === backup.filename
+                          ? "Mengunduh..."
+                          : "Download"}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ============================================= */}
           {/* TAB: JARINGAN — AKSES DARI LAPTOP LAIN (WIFI)  */}
           {/* ============================================= */}
 
@@ -1077,17 +1317,21 @@ function AdminSettings() {
               className="dashboard-card"
               style={{ maxWidth: "700px", margin: "0 auto", padding: "24px" }}
             >
-              <h2 style={{ marginTop: 0, marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
-                <IconWifi size={18} />
-                Akses dari Laptop Lain
-              </h2>
+              {(!networkInfo || networkInfo.mode !== "development") && (
+                <>
+                  <h2 style={{ marginTop: 0, marginBottom: 6, display: "flex", alignItems: "center", gap: 8 }}>
+                    <IconWifi size={18} />
+                    Akses dari Laptop Lain
+                  </h2>
 
-              <p style={{ marginTop: 0, marginBottom: 22, color: "#6b7280", fontSize: 13 }}>
-                Bagikan alamat di bawah ini ke laptop/HP lain yang
-                terhubung ke <strong>WiFi yang sama</strong> dengan
-                laptop ini, supaya mereka bisa membuka aplikasi tanpa
-                install apa pun.
-              </p>
+                  <p style={{ marginTop: 0, marginBottom: 22, color: "#6b7280", fontSize: 13 }}>
+                    Bagikan alamat di bawah ini ke laptop/HP lain yang
+                    terhubung ke <strong>WiFi yang sama</strong> dengan
+                    laptop ini, supaya mereka bisa membuka aplikasi tanpa
+                    install apa pun.
+                  </p>
+                </>
+              )}
 
               {networkError && (
                 <div className="error-message" style={{ marginBottom: 18 }}>
@@ -1104,132 +1348,145 @@ function AdminSettings() {
                   <div
                     style={{
                       display: "flex",
+                      flexDirection: "column",
                       alignItems: "center",
-                      gap: 10,
                       border: "1px solid var(--line)",
                       borderRadius: 8,
                       padding: "12px 14px",
                       marginBottom: 22,
                     }}
                   >
-                    <span
-                      style={{
-                        width: 10,
-                        height: 10,
-                        borderRadius: "50%",
-                        backgroundColor: networkInfo ? "#16a34a" : "#dc2626",
-                        flexShrink: 0,
-                      }}
-                    />
-                    <div style={{ fontSize: 13 }}>
-                      <strong>{networkInfo ? "Server sedang berjalan" : "Server tidak terdeteksi"}</strong>
-                      <div style={{ color: "#6b7280" }}>
+                    <strong style={{ fontSize: 13, marginBottom: 4 }}>
+                      {networkInfo
+                        ? networkInfo.mode === "development"
+                          ? "Server lokal / development"
+                          : "Server sedang berjalan"
+                        : "Server tidak terdeteksi"}
+                    </strong>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span
+                        style={{
+                          width: 10,
+                          height: 10,
+                          borderRadius: "50%",
+                          backgroundColor: networkInfo ? "#16a34a" : "#dc2626",
+                          flexShrink: 0,
+                        }}
+                      />
+                      <span style={{ fontSize: 13, color: "#6b7280" }}>
                         {networkInfo
                           ? `Laptop ini: ${networkInfo.hostname} · Backend port ${networkInfo.backend_port} · Frontend port ${networkInfo.frontend_port}`
                           : "Muat ulang halaman ini setelah backend & frontend dijalankan."}
-                      </div>
+                      </span>
                     </div>
+
+                    {networkInfo && networkInfo.addresses.length > 0 && (
+                      <div style={{ fontSize: 13, color: "#6b7280", marginTop: 4 }}>
+                        {networkInfo.addresses
+                          .map((addr) => `${addr.interface} — ${addr.ip}`)
+                          .join(" · ")}
+                      </div>
+                    )}
                   </div>
 
-                  {/* DAFTAR ALAMAT IP */}
+                  {networkInfo && networkInfo.mode !== "development" && (
+                    <>
+                      {/* DAFTAR ALAMAT IP */}
 
-                  {networkInfo && networkInfo.addresses.length > 0 ? (
-                    <div style={{ marginBottom: 26 }}>
-                      <label style={{ fontWeight: 600, fontSize: 14, display: "block", marginBottom: 10 }}>
-                        Alamat untuk Dibagikan
-                      </label>
+                      {networkInfo.addresses.length > 0 ? (
+                        <div style={{ marginBottom: 26 }}>
+                          <label style={{ fontWeight: 600, fontSize: 14, display: "block", marginBottom: 10 }}>
+                            Alamat untuk Dibagikan
+                          </label>
 
-                      {networkInfo.addresses.map((addr) => (
-                        <div
-                          key={addr.ip}
-                          style={{
-                            border: "1px solid var(--line)",
-                            borderRadius: 8,
-                            padding: "14px 16px",
-                            marginBottom: 12,
-                          }}
-                        >
-                          <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>
-                            {addr.interface} — {addr.ip}
-                          </div>
-
-                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                            <code
+                          {networkInfo.addresses.map((addr) => (
+                            <div
+                              key={addr.ip}
                               style={{
-                                flex: 1,
-                                minWidth: 220,
-                                fontSize: 15,
-                                fontWeight: 600,
-                                padding: "8px 10px",
-                                background: "#f3f4f6",
-                                borderRadius: 6,
+                                border: "1px solid var(--line)",
+                                borderRadius: 8,
+                                padding: "14px 16px",
+                                marginBottom: 12,
                               }}
                             >
-                              {addr.frontend_url}
-                            </code>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                <code
+                                  style={{
+                                    flex: 1,
+                                    minWidth: 220,
+                                    fontSize: 15,
+                                    fontWeight: 600,
+                                    padding: "8px 10px",
+                                    background: "#f3f4f6",
+                                    borderRadius: 6,
+                                  }}
+                                >
+                                  {addr.frontend_url}
+                                </code>
 
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              onClick={() => handleCopyUrl(addr.frontend_url)}
-                            >
-                              {copiedUrl === addr.frontend_url ? (
-                                <>
-                                  <IconCheck size={14} /> Tersalin
-                                </>
-                              ) : (
-                                "Salin Link"
-                              )}
-                            </button>
-                          </div>
+                                <button
+                                  type="button"
+                                  className="secondary-button"
+                                  onClick={() => handleCopyUrl(addr.frontend_url)}
+                                >
+                                  {copiedUrl === addr.frontend_url ? (
+                                    <>
+                                      <IconCheck size={14} /> Tersalin
+                                    </>
+                                  ) : (
+                                    "Salin Link"
+                                  )}
+                                </button>
+                              </div>
+                            </div>
+                          ))}
                         </div>
-                      ))}
-                    </div>
-                  ) : (
-                    networkInfo && (
-                      <div className="error-message" style={{ marginBottom: 22 }}>
-                        Tidak ada IP jaringan lokal yang terdeteksi. Pastikan
-                        laptop ini sudah terhubung ke WiFi (bukan cuma
-                        Ethernet/hotspot pribadi), lalu muat ulang tab ini.
+                      ) : (
+                        <div className="error-message" style={{ marginBottom: 22 }}>
+                          Tidak ada IP jaringan lokal yang terdeteksi. Pastikan
+                          laptop ini sudah terhubung ke WiFi (bukan cuma
+                          Ethernet/hotspot pribadi), lalu muat ulang tab ini.
+                        </div>
+                      )}
+
+                      {/* LANGKAH-LANGKAH */}
+
+                      <div>
+                        <label style={{ fontWeight: 600, fontSize: 14, display: "block", marginBottom: 10 }}>
+                          Cara Mengakses dari Laptop Lain
+                        </label>
+
+                        <ol style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: "#374151", lineHeight: 1.9, textAlign: "left" }}>
+                          <li>Pastikan laptop lain terhubung ke <strong>WiFi yang sama</strong> dengan laptop ini.</li>
+                          <li>Jalankan project ini dengan <code>python run_server.py</code> (BUKAN <code>run.py</code> biasa) — cuma <code>run_server.py</code> yang membuka akses ke WiFi.</li>
+                          <li>Pastikan backend & frontend masih berjalan di laptop ini (jangan ditutup terminalnya).</li>
+                          <li>Buka browser di laptop lain, lalu ketik/tempel salah satu alamat di atas.</li>
+                          <li>Login seperti biasa — data (soal, tryout, nilai) sama persis karena mengakses server yang sama.</li>
+                        </ol>
+
+                        <div
+                          style={{
+                            backgroundColor: "#fff3cd",
+                            color: "#856404",
+                            padding: "10px 12px",
+                            borderRadius: "6px",
+                            fontSize: "13px",
+                            marginTop: "18px",
+                          }}
+                        >
+                          ⚠️ Kalau laptop lain tetap tidak bisa connect, kemungkinan
+                          besar <strong>Windows Firewall</strong> di laptop ini
+                          memblokir port {networkInfo?.backend_port ?? 8000} &{" "}
+                          {networkInfo?.frontend_port ?? 5173}. Izinkan akses saat
+                          muncul pop-up "Windows Defender Firewall" ketika server
+                          pertama kali dijalankan, atau tambahkan izin manual lewat
+                          Control Panel &gt; Windows Defender Firewall &gt; Allow an
+                          app.
+                        </div>
                       </div>
-                    )
+                    </>
                   )}
-
-                  {/* LANGKAH-LANGKAH */}
-
-                  <div>
-                    <label style={{ fontWeight: 600, fontSize: 14, display: "block", marginBottom: 10 }}>
-                      Cara Mengakses dari Laptop Lain
-                    </label>
-
-                    <ol style={{ margin: 0, paddingLeft: 20, fontSize: 13, color: "#374151", lineHeight: 1.9 }}>
-                      <li>Pastikan laptop lain terhubung ke <strong>WiFi yang sama</strong> dengan laptop ini.</li>
-                      <li>Jalankan project ini dengan <code>python run_server.py</code> (BUKAN <code>run.py</code> biasa) — cuma <code>run_server.py</code> yang membuka akses ke WiFi.</li>
-                      <li>Pastikan backend & frontend masih berjalan di laptop ini (jangan ditutup terminalnya).</li>
-                      <li>Buka browser di laptop lain, lalu ketik/tempel salah satu alamat di atas.</li>
-                      <li>Login seperti biasa — data (soal, tryout, nilai) sama persis karena mengakses server yang sama.</li>
-                    </ol>
-
-                    <div
-                      style={{
-                        backgroundColor: "#fff3cd",
-                        color: "#856404",
-                        padding: "10px 12px",
-                        borderRadius: "6px",
-                        fontSize: "13px",
-                        marginTop: "18px",
-                      }}
-                    >
-                      ⚠️ Kalau laptop lain tetap tidak bisa connect, kemungkinan
-                      besar <strong>Windows Firewall</strong> di laptop ini
-                      memblokir port {networkInfo?.backend_port ?? 8000} &{" "}
-                      {networkInfo?.frontend_port ?? 5173}. Izinkan akses saat
-                      muncul pop-up "Windows Defender Firewall" ketika server
-                      pertama kali dijalankan, atau tambahkan izin manual lewat
-                      Control Panel &gt; Windows Defender Firewall &gt; Allow an
-                      app.
-                    </div>
-                  </div>
                 </>
               )}
             </div>

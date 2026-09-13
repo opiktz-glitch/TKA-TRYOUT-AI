@@ -395,7 +395,7 @@ function TeacherManagement() {
                   {availableUsers.length === 0 && (
                     <small style={{ color: "#9ca3af" }}>
                       Semua user GURU sudah punya profil, atau belum ada user
-                      dengan role GURU. Buat dulu akunnya lewat User Management.
+                      dengan role GURU. Buat dulu akunnya lewat Kelola User.
                     </small>
                   )}
                 </div>

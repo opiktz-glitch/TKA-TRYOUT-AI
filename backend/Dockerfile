@@ -31,4 +31,10 @@ EXPOSE 8000
 # PORT bisa di-override oleh platform hosting (Render/Railway dsb)
 ENV PORT=8000
 
+# Server produksi/hosting — bukan development lokal maupun mode
+# WiFi/LAN (run_server.py). Menentukan label yang ditampilkan di
+# tab Jaringan (Pengaturan Admin) — dan menyembunyikan tab itu
+# sepenuhnya, karena IP LAN tidak relevan di server cloud.
+ENV APP_MODE=production
+
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]

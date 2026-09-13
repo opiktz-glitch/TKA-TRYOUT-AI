@@ -181,6 +181,15 @@ class AIQuestionGenerateResponse(BaseModel):
     points: float = 1
     options: list[QuestionOptionCreate]
 
+    # Diisi kalau lapisan verifikasi mandiri (lihat
+    # routers/questions.py -> _verify_answer_consistency)
+    # mendeteksi bahwa opsi yang ditandai benar TIDAK sejalan
+    # dengan pembahasannya sendiri. None kalau konsisten, atau
+    # kalau verifikasi gagal dijalankan (mis. provider AI lagi
+    # error) — dalam kasus gagal, generate soal TETAP lanjut
+    # apa adanya, cuma tanpa jaminan tambahan ini.
+    consistency_warning: str | None = None
+
 
 # ==========================================
 # MULTI-PROVIDER AI — GENERIK (Ollama, Gemini, dst)
@@ -244,6 +253,29 @@ class SecretKeyUpdateRequest(BaseModel):
 class SecretKeyActionResponse(BaseModel):
     success: bool
     message: str
+
+
+# ==========================================
+# BACKUP DATABASE (Pengaturan > Backup)
+# ==========================================
+
+class BackupFileResponse(BaseModel):
+    filename: str
+    size_bytes: int
+    created_at: datetime
+
+
+class BackupListResponse(BaseModel):
+    backups: list[BackupFileResponse] = Field(default_factory=list)
+    retention_days: int
+
+
+class BackupActionResponse(BaseModel):
+    success: bool
+    message: str
+    backup: BackupFileResponse | None = None
+    removed_old_count: int = 0
+
 
 class QuestionResponse(BaseModel):
     id: int
@@ -477,3 +509,7 @@ class NetworkInfoResponse(BaseModel):
     addresses: list[NetworkAddress]
 
     backend_online: bool = True
+
+    # "development" (dijalankan lewat run.py, localhost saja) atau
+    # "server" (dijalankan lewat run_server.py, terbuka ke WiFi/LAN).
+    mode: str = "development"

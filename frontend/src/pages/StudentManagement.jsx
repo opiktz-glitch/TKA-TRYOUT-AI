@@ -408,7 +408,7 @@ function StudentManagement() {
                   {availableUsers.length === 0 && (
                     <small style={{ color: "#9ca3af" }}>
                       Semua user SISWA sudah punya profil, atau belum ada user
-                      dengan role SISWA. Buat dulu akunnya lewat User Management.
+                      dengan role SISWA. Buat dulu akunnya lewat Kelola User.
                     </small>
                   )}
                 </div>

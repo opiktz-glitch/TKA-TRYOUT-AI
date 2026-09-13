@@ -23,3 +23,6 @@ backend/database/*.sqlite3
 Thumbs.db
 .vscode/
 .idea/
+
+# Backup database - jangan ikut ke-commit 
+backend/backups/

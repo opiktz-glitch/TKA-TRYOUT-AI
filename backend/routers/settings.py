@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -11,11 +12,15 @@ from schemas import (
     SecretKeyStatusResponse,
     SecretKeyUpdateRequest,
     SecretKeyActionResponse,
+    BackupFileResponse,
+    BackupListResponse,
+    BackupActionResponse,
 )
 from dependencies import require_role
 
 import ai_providers
 import auth
+import backup_service
 
 
 router = APIRouter(
@@ -421,4 +426,114 @@ def rotate_secret_key(
             "SECRET_KEY berhasil dirotasi otomatis. Semua sesi login "
             "(termasuk sesi Anda saat ini) akan diminta login ulang."
         ),
+    )
+
+
+# =========================================================
+# BACKUP DATABASE (Pengaturan > Backup)
+#
+# Logika sebenarnya (cara backup dibuat, dibersihkan, divalidasi)
+# ada di backend/backup_service.py — dipakai bersama oleh endpoint
+# di bawah ini DAN script scripts/backup_db.py (dipanggil otomatis
+# tiap 24 jam oleh service "backup" di docker-compose.yml), supaya
+# backup manual dari tombol di UI dan backup terjadwal otomatis
+# selalu konsisten (folder sama, format nama file sama, retensi
+# sama).
+#
+# Dibatasi ADMIN saja (bukan GURU) — backup berisi SELURUH data
+# aplikasi (semua user, semua jawaban siswa), bukan sekadar setting
+# fitur seperti AI provider.
+# =========================================================
+
+@router.get(
+    "/backups",
+    response_model=BackupListResponse,
+)
+def get_backups(
+    current_user: User = Depends(require_role("ADMIN")),
+):
+    """Daftar backup yang sudah ada, terbaru dulu — untuk ditampilkan
+    di kartu "Backup Database" halaman Pengaturan."""
+
+    backups = backup_service.list_backups()
+
+    return BackupListResponse(
+        backups=[
+            BackupFileResponse(
+                filename=b.filename,
+                size_bytes=b.size_bytes,
+                created_at=b.created_at,
+            )
+            for b in backups
+        ],
+        retention_days=backup_service.RETENTION_DAYS,
+    )
+
+
+@router.post(
+    "/backups",
+    response_model=BackupActionResponse,
+)
+def create_backup_now(
+    current_user: User = Depends(require_role("ADMIN")),
+):
+    """
+    Tombol "Backup Sekarang" — membuat satu file backup baru di luar
+    jadwal otomatis, mis. sebelum admin melakukan perubahan besar
+    (rotasi SECRET_KEY, hapus data massal, dll). Sekaligus menjalankan
+    cleanup backup lama seperti biasa, supaya folder backup tidak
+    membengkak walau sering dipakai manual.
+    """
+
+    try:
+        backup = backup_service.backup_database()
+
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    except ValueError as exc:
+        # DATABASE_URL bukan SQLite — seharusnya tidak pernah terjadi
+        # di deployment ini, tapi ditangani supaya tidak 500 mentah.
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    removed = backup_service.cleanup_old_backups()
+
+    return BackupActionResponse(
+        success=True,
+        message=f"Backup berhasil dibuat: {backup.filename}",
+        backup=BackupFileResponse(
+            filename=backup.filename,
+            size_bytes=backup.size_bytes,
+            created_at=backup.created_at,
+        ),
+        removed_old_count=removed,
+    )
+
+
+@router.get("/backups/{filename}/download")
+def download_backup(
+    filename: str,
+    current_user: User = Depends(require_role("ADMIN")),
+):
+    """
+    Download satu file backup. filename divalidasi ketat lewat
+    backup_service.resolve_backup_path() (hanya menerima pola nama
+    file backup yang sah, mis. "project_tz_20260101_120000.db") —
+    MENCEGAH path traversal (mis. mencoba mengakses "../../.env" atau
+    file sistem lain lewat parameter ini).
+    """
+
+    try:
+        path = backup_service.resolve_backup_path(filename)
+
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    return FileResponse(
+        path=path,
+        filename=path.name,
+        media_type="application/octet-stream",
     )

@@ -1,3 +1,4 @@
+import os
 import subprocess
 import sys
 import time
@@ -12,10 +13,17 @@ def run_services():
         # Untuk kerja sehari-hari sendirian, pakai run.py biasa supaya
         # laptop tidak "kebuka" ke jaringan tanpa perlu.
 
+        # APP_MODE dikirim ke backend lewat environment variable,
+        # supaya tab Jaringan di halaman Pengaturan Admin bisa
+        # menampilkan label "Server sedang berjalan" (mode WiFi/LAN).
+        env = os.environ.copy()
+        env["APP_MODE"] = "server"
+
         print("Menjalankan FastAPI backend (MODE SERVER - bisa diakses dari WiFi)...")
         backend_process = subprocess.Popen(
             [r"backend\venv\Scripts\python", "-m", "uvicorn", "main:app", "--reload", "--host", "0.0.0.0", "--port", "8000"],
-            cwd="backend"
+            cwd="backend",
+            env=env,
         )
 
         # Beri jeda 2 detik

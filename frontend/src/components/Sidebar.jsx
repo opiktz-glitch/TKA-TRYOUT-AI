@@ -114,7 +114,7 @@ function Sidebar() {
             </div>
 
 
-            {/* User Management */}
+            {/* Kelola User */}
 
             <NavLink
               to="/users"
@@ -126,7 +126,7 @@ function Sidebar() {
               </span>
 
               <span>
-                User Management
+                Kelola User
               </span>
 
             </NavLink>

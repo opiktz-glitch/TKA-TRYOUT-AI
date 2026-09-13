@@ -33,13 +33,21 @@ const API_BASE_URL = resolveApiBaseUrl();
 // =====================================================
 // EXTRACT ERROR MESSAGE
 //
-// FastAPI membalas error dalam beberapa bentuk berbeda:
-// - HTTPException manual   -> { detail: "Pesan error" }
-// - Validasi Pydantic (422) -> { detail: [{ msg: "...", loc: [...] }, ...] }
+// FastAPI/backend membalas error dalam beberapa bentuk:
+// - HTTPException manual    -> { detail: "Pesan error" }
+// - Validasi Pydantic (422) -> { detail: "Pesan A; Pesan B" }
+//   Sejak backend/main.py punya validation_exception_handler
+//   (translator error Pydantic ke Bahasa Indonesia), FastAPI
+//   TIDAK LAGI mengirim detail berbentuk array untuk error
+//   validasi — sudah digabung jadi satu string ("; " sebagai
+//   pemisah bila lebih dari satu field bermasalah) dan sudah
+//   diterjemahkan, jadi cabang string di bawah ini yang dipakai.
 //
-// Tanpa penanganan ini, kasus kedua bikin `new Error(data.detail)`
-// menghasilkan pesan rusak/kosong ("[object Object]"), sehingga
-// terlihat seolah tidak ada feedback error sama sekali.
+// Cabang Array.isArray tetap dipertahankan sebagai fallback
+// jaga-jaga, kalau-kalau ada endpoint lain (di luar
+// validation_exception_handler) yang suatu saat mengirim
+// `detail` berbentuk array mentah ala FastAPI default —
+// supaya tidak muncul pesan rusak seperti "[object Object]".
 // =====================================================
 
 function extractErrorMessage(data) {
@@ -391,6 +399,10 @@ export async function getTryout(tryoutId) {
   return apiFetch(`/api/tryouts/${tryoutId}`);
 }
 
+export async function getTryoutReview(tryoutId) {
+  return apiFetch(`/api/tryouts/${tryoutId}/review`);
+}
+
 export async function getAvailableQuestions(subjectId, difficulty = "") {
   let url = `/api/tryouts/available/questions?subject_id=${subjectId}`;
 
@@ -688,4 +700,57 @@ export async function rotateSecretKey() {
   return apiFetch("/api/settings/secret-key/rotate", {
     method: "POST",
   });
+}
+
+
+// =========================================================
+// PENGATURAN > BACKUP — Backup Database SQLite
+//
+// getBackups() dipakai menampilkan daftar backup yang sudah ada.
+// createBackupNow() memicu backup baru di luar jadwal otomatis
+// (service "backup" di Docker sudah jalan sendiri tiap 24 jam).
+//
+// downloadBackup() SENGAJA tidak memakai apiFetch() biasa — respons
+// endpoint ini berupa file biner (.db), bukan JSON, jadi di-fetch
+// manual sebagai blob lalu dipicu download lewat elemen <a>
+// sementara (browser tidak mengizinkan window.location langsung ke
+// URL yang butuh header Authorization).
+// =========================================================
+
+export async function getBackups() {
+  return apiFetch("/api/settings/backups");
+}
+
+export async function createBackupNow() {
+  return apiFetch("/api/settings/backups", {
+    method: "POST",
+  });
+}
+
+export async function downloadBackup(filename) {
+  const token = localStorage.getItem("access_token");
+
+  const response = await fetch(
+    `${API_BASE_URL}/api/settings/backups/${encodeURIComponent(filename)}/download`,
+    {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }
+  );
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(extractErrorMessage(data) || "Gagal mengunduh backup");
+  }
+
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  window.URL.revokeObjectURL(url);
 }

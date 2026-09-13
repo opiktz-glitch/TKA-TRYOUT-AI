@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 
 import Sidebar from "../components/Sidebar";
 import Header from "../components/Header";
-import { IconEdit, IconTrash, IconCheck } from "../components/Icons";
+import { IconEdit, IconTrash, IconCheck, IconBook } from "../components/Icons";
+import PanduanSoalModal from "../components/PanduanSoalModal";
 import {
   getSubjects,
   getQuestions,
@@ -49,6 +50,7 @@ function QuestionManagement() {
   const [loading, setLoading] = useState(true);
 
   const [showModal, setShowModal] = useState(false);
+  const [showGuideModal, setShowGuideModal] = useState(false);
 
   const [editingQuestion, setEditingQuestion] =
     useState(null);
@@ -102,6 +104,13 @@ function QuestionManagement() {
   const [aiGeneratedNotice, setAiGeneratedNotice] =
     useState(false);
 
+  // Diisi dari result.consistency_warning saat backend mendeteksi
+  // opsi yang ditandai benar kemungkinan tidak sejalan dengan
+  // pembahasannya sendiri (lihat routers/questions.py ->
+  // _verify_answer_consistency). null kalau tidak ada masalah.
+  const [aiConsistencyWarning, setAiConsistencyWarning] =
+    useState(null);
+
   // "form"   -> isi mata pelajaran/kesulitan/materi
   // "prompt" -> tampilkan prompt (bisa diedit) sebelum generate
   const [aiStep, setAiStep] = useState("form");
@@ -136,6 +145,14 @@ function QuestionManagement() {
 
   const [statusFilter, setStatusFilter] =
     useState("");
+
+  // ======================================================
+  // PAGINATION (Bank Soal)
+  // ======================================================
+
+  const QUESTIONS_PER_PAGE = 10;
+
+  const [currentPage, setCurrentPage] = useState(1);
 
   // ======================================================
   // MESSAGE
@@ -301,6 +318,7 @@ function QuestionManagement() {
     setFormError("");
     setFormSuccess("");
     setAiGeneratedNotice(false);
+    setAiConsistencyWarning(null);
     setEditAiUnavailableMessage("");
 
     setShowModal(true);
@@ -368,6 +386,7 @@ function QuestionManagement() {
     setFormError("");
     setFormSuccess("");
     setAiGeneratedNotice(false);
+    setAiConsistencyWarning(null);
     setEditAiUnavailableMessage("");
 
     setShowModal(true);
@@ -393,6 +412,7 @@ function QuestionManagement() {
     setFormError("");
     setFormSuccess("");
     setAiGeneratedNotice(false);
+    setAiConsistencyWarning(null);
     setEditAiUnavailableMessage("");
   }
 
@@ -780,6 +800,7 @@ function QuestionManagement() {
       setFormError("");
       setFormSuccess("");
       setAiGeneratedNotice(true);
+      setAiConsistencyWarning(result.consistency_warning || null);
 
       setShowAiModal(false);
       setAiStep("form");
@@ -1194,6 +1215,34 @@ function QuestionManagement() {
     ]);
 
 
+  // Reset ke halaman 1 setiap kali pencarian/filter berubah, supaya
+  // tidak "nyangkut" di halaman 5 misalnya padahal hasil filter
+  // barunya cuma ada 1 halaman.
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, subjectFilter, difficultyFilter, statusFilter]);
+
+
+  const totalPages = Math.max(
+    1,
+    Math.ceil(filteredQuestions.length / QUESTIONS_PER_PAGE)
+  );
+
+  // Kalau halaman aktif jadi lebih besar dari total halaman yang ada
+  // (mis. setelah soal terakhir di halaman itu dihapus), mundurkan
+  // otomatis ke halaman terakhir yang valid.
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
+  const paginatedQuestions = useMemo(() => {
+    const start = (currentPage - 1) * QUESTIONS_PER_PAGE;
+    return filteredQuestions.slice(start, start + QUESTIONS_PER_PAGE);
+  }, [filteredQuestions, currentPage]);
+
+
   // ======================================================
   // RENDER
   // ======================================================
@@ -1463,7 +1512,7 @@ function QuestionManagement() {
                       <th className="align-center">Tingkat</th>
                       <th className="align-center">Bobot</th>
                       <th className="align-center">Status</th>
-                      <th className="align-center">Aksi</th>
+                      <th className="align-center sticky-col">Aksi</th>
 
                     </tr>
 
@@ -1472,7 +1521,7 @@ function QuestionManagement() {
 
                   <tbody>
 
-                    {filteredQuestions.map(
+                    {paginatedQuestions.map(
                       (question, index) => (
 
                         <tr
@@ -1482,7 +1531,7 @@ function QuestionManagement() {
                         >
 
                           <td className="align-center">
-                            {index + 1}
+                            {(currentPage - 1) * QUESTIONS_PER_PAGE + index + 1}
                           </td>
 
                           <td className="align-center">
@@ -1557,7 +1606,7 @@ function QuestionManagement() {
                           </td>
 
 
-                          <td className="align-center">
+                          <td className="align-center sticky-col">
 
                             <div className="action-buttons">
 
@@ -1609,6 +1658,105 @@ function QuestionManagement() {
                       ? "Soal tidak ditemukan."
                       : "Belum ada soal."
                     }
+                  </div>
+
+                )}
+
+                {filteredQuestions.length > 0 && (
+
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      flexWrap: "wrap",
+                      gap: 12,
+                      padding: "14px 4px 4px",
+                    }}
+                  >
+                    <span style={{ fontSize: 13, color: "#6b7280" }}>
+                      Menampilkan{" "}
+                      {(currentPage - 1) * QUESTIONS_PER_PAGE + 1}
+                      {"–"}
+                      {Math.min(
+                        currentPage * QUESTIONS_PER_PAGE,
+                        filteredQuestions.length
+                      )}{" "}
+                      dari {filteredQuestions.length} soal
+                    </span>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                        disabled={currentPage === 1}
+                      >
+                        Sebelumnya
+                      </button>
+
+                      {Array.from({ length: totalPages }, (_, i) => i + 1)
+                        // Kalau halamannya banyak, cukup tampilkan halaman
+                        // pertama, terakhir, dan beberapa di sekitar halaman
+                        // aktif — sisanya diringkas jadi "…" supaya baris
+                        // nomor halaman tidak melebar tak terbatas.
+                        .filter((page) => {
+                          if (totalPages <= 7) return true;
+                          return (
+                            page === 1 ||
+                            page === totalPages ||
+                            Math.abs(page - currentPage) <= 1
+                          );
+                        })
+                        .reduce((acc, page, idx, arr) => {
+                          if (idx > 0 && page - arr[idx - 1] > 1) {
+                            acc.push("ellipsis-" + page);
+                          }
+                          acc.push(page);
+                          return acc;
+                        }, [])
+                        .map((item) =>
+                          typeof item === "string" ? (
+                            <span
+                              key={item}
+                              style={{ padding: "0 4px", color: "#9ca3af", fontSize: 13 }}
+                            >
+                              …
+                            </span>
+                          ) : (
+                            <button
+                              key={item}
+                              type="button"
+                              onClick={() => setCurrentPage(item)}
+                              style={{
+                                minWidth: 32,
+                                height: 32,
+                                borderRadius: 6,
+                                border: "1px solid var(--line)",
+                                background:
+                                  item === currentPage ? "var(--accent)" : "white",
+                                color: item === currentPage ? "white" : "#374151",
+                                fontWeight: item === currentPage ? 600 : 500,
+                                fontSize: 13,
+                                cursor: "pointer",
+                              }}
+                            >
+                              {item}
+                            </button>
+                          )
+                        )}
+
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() =>
+                          setCurrentPage((p) => Math.min(totalPages, p + 1))
+                        }
+                        disabled={currentPage === totalPages}
+                      >
+                        Berikutnya
+                      </button>
+                    </div>
                   </div>
 
                 )}
@@ -1719,6 +1867,17 @@ function QuestionManagement() {
             <form
               onSubmit={handleSubmit}
             >
+
+              {aiConsistencyWarning && (
+
+                <div
+                  className="form-error-message"
+                  style={{ marginBottom: "15px" }}
+                >
+                  ⚠️ {aiConsistencyWarning}
+                </div>
+
+              )}
 
               {aiGeneratedNotice && (
 
@@ -2043,6 +2202,15 @@ function QuestionManagement() {
 
                 <button
                   type="button"
+                  className="guide-button"
+                  onClick={() => setShowGuideModal(true)}
+                >
+                  <IconBook size={15} />
+                  Panduan
+                </button>
+
+                <button
+                  type="button"
                   className="secondary-button"
                   onClick={
                     closeModal
@@ -2266,6 +2434,15 @@ function QuestionManagement() {
 
                   <button
                     type="button"
+                    className="guide-button"
+                    onClick={() => setShowGuideModal(true)}
+                  >
+                    <IconBook size={15} />
+                    Panduan
+                  </button>
+
+                  <button
+                    type="button"
                     className="secondary-button"
                     onClick={closeAiModal}
                     disabled={aiPromptLoading}
@@ -2370,6 +2547,10 @@ function QuestionManagement() {
 
         </div>
 
+      )}
+
+      {showGuideModal && (
+        <PanduanSoalModal onClose={() => setShowGuideModal(false)} />
       )}
 
     </div>

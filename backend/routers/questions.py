@@ -1,5 +1,7 @@
 import json
+import logging
 import random
+import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -30,6 +32,8 @@ router = APIRouter(
     prefix="/api/questions",
     tags=["Questions"]
 )
+
+logger = logging.getLogger(__name__)
 
 
 ALLOWED_TYPES = [
@@ -298,14 +302,18 @@ Buatkan SATU soal pilihan ganda dengan ketentuan berikut:
 - Materi / lingkup soal: {materi.strip()}
 - Format Teks: Buatlah sebuah teks bacaan nonfiksi atau fiksi pendek yang utuh (MAKSIMAL 2 kalimat, jangan lebih) di dalam question_text, diikuti dengan kalimat tanya yang jelas di bagian akhir teks. Hindari kalimat pembuka yang kaku seperti "Baca teks berikut:".
 - Kualitas Bahasa: Menggunakan bahasa Indonesia baku, logis, dan ramah anak.
+- Notasi Matematika: JANGAN gunakan notasi LaTeX sama sekali (tanda $, \\frac{{a}}{{b}}, \\times, \\div, \\sqrt, \\^, dan sejenisnya) di question_text maupun options, karena teks ini ditampilkan APA ADANYA ke siswa tanpa ada yang merender LaTeX. Tulis pecahan dan operasi hitung dalam bentuk teks biasa yang mudah dibaca siswa SD, misalnya "2 1/4 bagian" (bukan "$2 \\frac{{1}}{{4}}$"), "3 x 4" (bukan "3 \\times 4"), "12 : 3" (bukan "12 \\div 3"). Untuk kuadrat/pangkat, pakai simbol superscript langsung seperti "5\u00b2" atau eja "5 pangkat 2" / "5 kuadrat" (bukan "5^2" atau "$5^2$").
 - Pilihan Jawaban: Kelima pilihan (A-E) harus berisi teks yang BERBEDA satu sama lain, jangan ada dua pilihan dengan isi yang sama persis atau hanya beda kata sedikit tapi maknanya identik.
 {instruction_line}
 
 Soal harus memiliki tepat 5 pilihan jawaban dengan kode A, B, C, D, E, dan hanya SATU pilihan yang benar. Sertakan juga pembahasan singkat yang menjelaskan kenapa jawaban itu benar.
 
+PENTING - urutan berpikir: Tentukan dan HITUNG dulu jawaban yang benar secara matematis/logis SEBELUM menuliskan seluruh pilihan (A-E). Setelah itu, isi "correct_answer_text" dengan teks jawaban benar itu (harus SAMA PERSIS, kata demi kata, dengan salah satu "option_text" di bawah) — field ini dipakai sistem untuk pengecekan konsistensi otomatis, jadi wajib identik.
+
 Jawab HANYA dengan JSON valid, tanpa teks lain, tanpa markdown, dengan format persis seperti ini:
 {{
   "question_text": "teks soal di sini",
+  "correct_answer_text": "isi jawaban yang benar, sama persis dengan salah satu option_text di bawah",
   "options": [
     {{"option_code": "A", "option_text": "...", "is_correct": false}},
     {{"option_code": "B", "option_text": "...", "is_correct": false}},
@@ -321,6 +329,252 @@ Jawab HANYA dengan JSON valid, tanpa teks lain, tanpa markdown, dengan format pe
 # ai_providers.call_active_provider() — lihat backend/ai_providers.py.
 # Router ini tidak perlu tahu provider mana yang aktif atau
 # bagaimana cara memanggilnya.
+
+
+# =========================================================
+# BERSIHKAN NOTASI LATEX DARI HASIL AI
+#
+# build_ai_prompt() di atas sudah eksplisit meminta AI tidak
+# memakai LaTeX, tapi ini TIDAK dijamin selalu dipatuhi — model
+# lokal (Ollama) sudah pernah terbukti tidak konsisten mengikuti
+# instruksi format (lihat catatan JSON di call_ollama_provider),
+# dan model manapun cenderung "reflex" memakai LaTeX untuk soal
+# pecahan/hitungan karena itu pola paling umum di data latihnya.
+#
+# Aplikasi ini TIDAK punya renderer LaTeX di mana pun (form Bank
+# Soal cuma <textarea> biasa, halaman siswa mengerjakan tryout
+# juga menampilkan question_text apa adanya) — jadi kalau notasi
+# LaTeX lolos sampai tersimpan, siswa SD akan melihat teks mentah
+# seperti "$2 \\frac{1}{4}$" alih-alih pecahan yang bisa dibaca.
+#
+# Fungsi ini jadi lapisan pertahanan kedua: menyapu pola LaTeX
+# paling umum untuk materi SD (pecahan, akar, kali, bagi, persen,
+# delimiter $...$) jadi teks biasa, dijalankan otomatis pada
+# question_text, tiap option_text, dan explanation sebelum
+# dikembalikan sebagai draft ke guru.
+# =========================================================
+
+# \frac{a}{b} DAN varian gaya LaTeX lain yang sering dipakai model AI
+# secara bergantian untuk hal yang sama: \dfrac (display style, pecahan
+# ditampilkan lebih besar) dan \tfrac (text style, lebih kecil). Ketiganya
+# secara visual sama-sama berarti "a per b" untuk kebutuhan aplikasi ini.
+_LATEX_FRAC_PATTERN = re.compile(
+    r"\\(?:d|t)?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}"
+)
+_LATEX_SQRT_PATTERN = re.compile(r"\\sqrt\s*\{([^{}]*)\}")
+_LATEX_TEXT_PATTERN = re.compile(r"\\text\s*\{([^{}]*)\}")
+
+# Eksponen gaya LaTeX: x^2 atau x^{12} -> ditangkap bagian "2"/"12"-nya
+# saja (grup 1), lalu diubah ke superscript unicode oleh
+# _to_superscript() di bawah. Tanda "^" itu sendiri (di luar grup)
+# otomatis hilang karena diganti oleh hasil sub().
+_LATEX_EXPONENT_PATTERN = re.compile(r"\^\{?(-?\d+)\}?")
+
+# Peta digit biasa -> karakter superscript Unicode (bukan markup,
+# jadi tampil benar di textarea/HTML/PDF mana pun tanpa renderer).
+_SUPERSCRIPT_MAP = str.maketrans(
+    "0123456789-",
+    "\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079\u207b",
+)
+
+
+def _to_superscript(match: re.Match) -> str:
+    return match.group(1).translate(_SUPERSCRIPT_MAP)
+
+
+def _clean_ai_math_notation(text: str) -> str:
+
+    if not text:
+        return text
+
+    # \frac{1}{4} -> 1/4  (termasuk "2 \frac{1}{4}" -> "2 1/4")
+    text = _LATEX_FRAC_PATTERN.sub(r"\1/\2", text)
+
+    # x^2 atau x^{2} -> x²
+    text = _LATEX_EXPONENT_PATTERN.sub(_to_superscript, text)
+
+    # \sqrt{9} -> akar(9)
+    text = _LATEX_SQRT_PATTERN.sub(r"akar(\1)", text)
+
+    # \text{sisa} -> sisa
+    text = _LATEX_TEXT_PATTERN.sub(r"\1", text)
+
+    # Simbol operasi hitung umum
+    text = text.replace("\\times", "x")
+    text = text.replace("\\cdot", "x")
+    text = text.replace("\\div", ":")
+    text = text.replace("\\%", "%")
+
+    # Delimiter mode matematika LaTeX ($...$, $$...$$, \(...\), \[...\])
+    text = text.replace("$$", "").replace("$", "")
+    text = text.replace("\\(", "").replace("\\)", "")
+    text = text.replace("\\[", "").replace("\\]", "")
+
+    # Rapikan spasi ganda yang mungkin muncul akibat penghapusan di atas
+    text = re.sub(r"[ \t]{2,}", " ", text)
+
+    return text.strip()
+
+
+# =========================================================
+# VERIFIKASI KONSISTENSI JAWABAN (lapisan pertahanan tambahan)
+#
+# LATAR BELAKANG: correct_count != 1 (di bawah) cuma memastikan
+# AI menandai TEPAT SATU opsi sebagai `is_correct: true` — itu
+# validasi STRUKTUR. Tapi AI (LLM manapun, Ollama atau Gemini)
+# kadang menghasilkan pembahasan ("explanation") yang perhitungan-
+# nya benar, namun secara tidak sengaja menandai opsi yang SALAH
+# sebagai is_correct=true (inkonsistensi/halusinasi internal model
+# itu sendiri) — jadi lolos validasi struktur tapi kunci jawabannya
+# tetap salah. Guru yang tidak sempat menghitung ulang manual bisa
+# tidak sadar sampai siswa mengerjakan.
+#
+# STRATEGI (2 TAHAP, supaya tidak selalu menambah biaya/latensi
+# panggilan AI ekstra di SETIAP generate soal):
+#
+#   TAHAP 1 (_check_self_consistency, GRATIS, tanpa panggilan AI
+#   tambahan): build_ai_prompt() di atas sudah meminta AI menulis
+#   field "correct_answer_text" — jawaban benar versi AI itu sendiri
+#   — SEBELUM menyusun daftar opsi. Kita tinggal cocokkan teks itu
+#   dengan teks opsi yang ditandai is_correct=true, dari RESPONS
+#   YANG SAMA, tanpa network call tambahan. Kalau cocok -> dianggap
+#   konsisten, SELESAI (tidak lanjut ke tahap 2). Kalau tidak cocok
+#   (atau field-nya kosong) -> baru dianggap "mencurigakan".
+#   Catatan jujur: karena masih dari satu forward-pass yang sama,
+#   deteksi ini lebih lemah dari verifikasi independen — kalau
+#   model konsisten salah di kedua bagian, tidak akan ketangkap.
+#
+#   TAHAP 2 (_verify_answer_consistency, BERBAYAR, cuma dijalankan
+#   kalau tahap 1 mencurigakan): panggil ulang provider AI dengan
+#   prompt terpisah yang HANYA berisi teks soal + pilihan (tanpa
+#   info opsi mana yang benar), minta dihitung ulang dari awal.
+#   Ini yang menghasilkan warning final yang ditampilkan ke guru.
+#
+# Dengan pola ini, panggilan AI ekstra (tahap 2) hanya terjadi pada
+# generate yang memang terindikasi bermasalah, bukan di setiap kali
+# tombol "Generate Soal" ditekan.
+#
+# Di kedua tahap, kalau prosesnya sendiri gagal (timeout, JSON tidak
+# valid, dsb), verifikasi DILEWATI SAJA (bukan menggagalkan generate
+# soal utama) — ini cuma lapisan tambahan, bukan syarat wajib.
+# =========================================================
+
+def _normalize_answer_text(text: str) -> str:
+    return " ".join(text.strip().lower().split())
+
+
+def _check_self_consistency(
+    ai_result: dict,
+    options: list[dict],
+) -> bool:
+    """
+    TAHAP 1 (gratis). Mengembalikan True kalau ADA indikasi
+    mencurigakan (correct_answer_text tidak cocok / kosong) —
+    artinya tahap 2 (panggilan AI ekstra) perlu dijalankan.
+    Mengembalikan False kalau correct_answer_text sudah cocok
+    persis dengan opsi yang ditandai benar (tahap 2 dilewati).
+    """
+
+    correct_answer_text = _clean_ai_math_notation(
+        str(ai_result.get("correct_answer_text", "")).strip()
+    )
+
+    if not correct_answer_text:
+        # AI tidak mengisi field ini -> tidak ada dasar untuk
+        # memastikan konsisten, anggap mencurigakan supaya lanjut
+        # ke tahap 2 (lebih aman daripada diam-diam dilewati).
+        return True
+
+    flagged_option = next(
+        (option for option in options if option["is_correct"]),
+        None,
+    )
+
+    if not flagged_option:
+        return True
+
+    return _normalize_answer_text(correct_answer_text) != (
+        _normalize_answer_text(flagged_option["option_text"])
+    )
+
+
+def _build_verification_prompt(
+    question_text: str,
+    options: list[dict],
+) -> str:
+
+    options_text = "\n".join(
+        f"{option['option_code']}. {option['option_text']}"
+        for option in options
+    )
+
+    return f"""Anda adalah pemeriksa soal yang teliti. Berikut sebuah soal pilihan ganda beserta pilihan jawabannya (TANPA diberi tahu mana yang benar). Hitung/analisis sendiri dari awal, lalu tentukan SATU huruf pilihan yang paling benar.
+
+Soal:
+{question_text}
+
+Pilihan:
+{options_text}
+
+Jawab HANYA dengan JSON valid, tanpa teks lain, format persis:
+{{"correct_option_code": "A"}}"""
+
+
+async def _verify_answer_consistency(
+    db: Session,
+    question_text: str,
+    options: list[dict],
+    flagged_code: str,
+) -> str | None:
+    """
+    TAHAP 2 (panggilan AI ekstra). Mengembalikan pesan warning (str)
+    kalau verifikasi ulang tidak sepakat dengan opsi yang sudah
+    ditandai benar, atau None kalau sepakat / verifikasi tidak bisa
+    dijalankan.
+    """
+
+    verification_prompt = _build_verification_prompt(
+        question_text, options
+    )
+
+    try:
+
+        verification_result = await ai_providers.call_active_provider(
+            verification_prompt, db
+        )
+
+        verified_code = str(
+            verification_result.get("correct_option_code", "")
+        ).strip().upper()
+
+    except Exception:
+
+        # Verifikasi cuma lapisan tambahan — kalau gagal (provider
+        # error/timeout/JSON tidak valid), jangan gagalkan proses
+        # generate soal utama yang sudah berhasil.
+        logger.warning(
+            "Verifikasi konsistensi jawaban AI (tahap 2) gagal "
+            "dijalankan, dilewati.",
+            exc_info=True,
+        )
+
+        return None
+
+    if verified_code not in ALLOWED_OPTIONS:
+        # Verifier tidak menjawab format yang diminta -> tidak
+        # cukup andal untuk dijadikan dasar warning, lewati saja.
+        return None
+
+    if verified_code == flagged_code:
+        return None
+
+    return (
+        "Verifikasi otomatis mendeteksi kemungkinan pembahasan "
+        f"TIDAK konsisten dengan kunci jawaban: opsi yang ditandai "
+        f"benar adalah {flagged_code}, tapi pengecekan ulang oleh AI "
+        f"mengarah ke opsi {verified_code}. Mohon hitung/periksa "
+        "ulang manual sebelum menyimpan soal ini."
+    )
 
 
 @router.post(
@@ -463,9 +717,9 @@ async def generate_question_ai(
     # tidak ditolak lagi saat disimpan lewat endpoint biasa.
     # -----------------------------------------------------
 
-    question_text = str(
-        ai_result.get("question_text", "")
-    ).strip()
+    question_text = _clean_ai_math_notation(
+        str(ai_result.get("question_text", "")).strip()
+    )
 
     if not question_text:
 
@@ -507,9 +761,9 @@ async def generate_question_ai(
             raw_option.get("option_code", "")
         ).strip().upper()
 
-        text = str(
-            raw_option.get("option_text", "")
-        ).strip()
+        text = _clean_ai_math_notation(
+            str(raw_option.get("option_text", "")).strip()
+        )
 
         is_correct = bool(
             raw_option.get("is_correct", False)
@@ -601,9 +855,34 @@ async def generate_question_ai(
     for index, option in enumerate(options):
         option["option_code"] = ALLOWED_OPTIONS[index]
 
-    explanation = str(
-        ai_result.get("explanation", "")
-    ).strip() or None
+    explanation = _clean_ai_math_notation(
+        str(ai_result.get("explanation", "")).strip()
+    ) or None
+
+    # -----------------------------------------------------
+    # Verifikasi konsistensi jawaban, 2 tahap (lihat penjelasan
+    # lengkap di komentar _check_self_consistency /
+    # _verify_answer_consistency di atas):
+    #   Tahap 1 (gratis) dulu -> tahap 2 (panggilan AI ekstra)
+    #   HANYA kalau tahap 1 mencurigakan. Tidak memblokir — cuma
+    #   menambahkan warning ke draft yang dikembalikan.
+    # -----------------------------------------------------
+
+    flagged_code = next(
+        option["option_code"]
+        for option in options
+        if option["is_correct"]
+    )
+
+    if _check_self_consistency(ai_result, options):
+
+        consistency_warning = await _verify_answer_consistency(
+            db, question_text, options, flagged_code,
+        )
+
+    else:
+
+        consistency_warning = None
 
     return AIQuestionGenerateResponse(
         subject_id=subject.id,
@@ -613,6 +892,7 @@ async def generate_question_ai(
         explanation=explanation,
         points=1,
         options=options,
+        consistency_warning=consistency_warning,
     )
 
 
