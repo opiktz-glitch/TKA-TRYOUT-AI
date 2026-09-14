@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import Sidebar from "../components/Sidebar";
 import Header from "../components/Header";
@@ -107,19 +107,10 @@ function TryoutManagement() {
   const [form, setForm] = useState(createEmptyForm());
 
   // =====================================================
-  // LOAD AWAL
-  // =====================================================
-
-  useEffect(() => {
-    loadSubjects();
-    loadTryouts();
-  }, []);
-
-  // =====================================================
   // LOAD SUBJECTS
   // =====================================================
 
-  async function loadSubjects() {
+  const loadSubjects = useCallback(async () => {
     try {
       const data = await getSubjects();
 
@@ -128,13 +119,13 @@ function TryoutManagement() {
       console.error("LOAD SUBJECT ERROR:", err);
       setLoadError(err.message || "Gagal mengambil mata pelajaran");
     }
-  }
+  }, []);
 
   // =====================================================
   // LOAD TRYOUT
   // =====================================================
 
-  async function loadTryouts() {
+  const loadTryouts = useCallback(async () => {
     try {
       setLoading(true);
       setLoadError("");
@@ -148,7 +139,16 @@ function TryoutManagement() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
+
+  // =====================================================
+  // LOAD AWAL
+  // =====================================================
+
+  useEffect(() => {
+    loadSubjects();
+    loadTryouts();
+  }, [loadSubjects, loadTryouts]);
 
   // =====================================================
   // LOAD AVAILABLE QUESTIONS

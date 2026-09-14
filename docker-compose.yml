@@ -26,9 +26,26 @@ services:
     build:
       context: ./frontend
       args:
-        # Ganti sesuai domain backend production kalau deploy ke server,
-        # untuk lokal/testing docker-compose ini sudah cukup.
-        VITE_API_URL: http://localhost:8000
+        # PENTING (production): nilai ini di-"bake" ke dalam file JS
+        # hasil build SAAT INI JUGA (build-time, bukan runtime env
+        # var biasa) — lihat frontend/Dockerfile. Kalau di-deploy ke
+        # server sungguhan tapi nilainya masih "localhost", browser
+        # tiap PENGGUNA akan mencoba mengakses API di PERANGKAT
+        # MEREKA SENDIRI (localhost = perangkat itu sendiri, bukan
+        # server), bukan ke server API yang sesungguhnya — akibatnya
+        # semua request API gagal total buat semua orang selain di
+        # laptop yang dipakai deploy.
+        #
+        # Default di bawah ini ("http://localhost:8000") HANYA aman
+        # untuk uji coba lokal (docker compose up di laptop sendiri).
+        # Untuk deploy ke server/domain produksi:
+        #   1. Salin .env.example (di root project) jadi .env
+        #   2. Isi VITE_API_URL di .env itu dengan domain API
+        #      produksi, contoh: https://api.tka-ai.sekolahku.id
+        #   3. docker compose up -d --build   (WAJIB --build ulang,
+        #      cukup restart container SAJA tidak akan memperbarui
+        #      nilai yang sudah ter-bake dari build sebelumnya)
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
     container_name: tka_tryout_frontend
     restart: unless-stopped
     depends_on:

@@ -31,7 +31,7 @@ Platform ujian/tryout online berbasis sekolah dengan dukungan tiga peran penggun
 
 **Backend**
 - FastAPI + SQLAlchemy (ORM)
-- SQLite (dev), dengan skrip migrasi ke PostgreSQL/MySQL untuk produksi
+- SQLite (dev & produksi saat ini). Migrasi ke PostgreSQL/MySQL untuk skala konkurensi lebih tinggi masih berupa rencana ke depan, belum ada script migrasinya
 - `bcrypt` (hashing password, dipanggil langsung tanpa `passlib`)
 - `python-jose` (JWT)
 - `cryptography` (Fernet, enkripsi API key AI)
@@ -59,6 +59,7 @@ Platform ujian/tryout online berbasis sekolah dengan dukungan tiga peran penggun
 │   ├── schemas.py               # Skema Pydantic (request/response)
 │   ├── routers/                 # Endpoint API per domain (auth, users, questions, tryouts, dst.)
 │   ├── scripts/backup_db.py    # Wrapper CLI untuk backup manual/cron
+│   ├── scripts/check_legacy_option_e.py  # Cek/bereskan soal lama peninggalan opsi ke-5 (E)
 │   └── database/                # Lokasi file database SQLite (project_tz.db)
 ├── frontend/
 │   ├── src/
@@ -68,6 +69,7 @@ Platform ujian/tryout online berbasis sekolah dengan dukungan tiga peran penggun
 │   │   └── services/api.js      # Wrapper pemanggilan API backend
 │   └── vite.config.js
 ├── docker-compose.yml
+├── .env.example                  # Contoh config untuk docker-compose.yml (VITE_API_URL, dsb.)
 ├── run.py                        # Jalankan mode develop (localhost saja)
 └── run_server.py                # Jalankan mode server (bisa diakses via LAN/WiFi)
 ```
@@ -146,7 +148,7 @@ Database SQLite dan folder backup di-*bind mount* ke host (`./backend/backups`) 
 
 Untuk produksi, sesuaikan minimal:
 - `backend/.env` → isi `CORS_ORIGINS` dengan domain asli
-- `docker-compose.yml` → `VITE_API_URL` di build args frontend, sesuaikan domain backend
+- `.env` di root project (salin dari `.env.example`) → isi `VITE_API_URL` dengan domain API produksi (BUKAN `localhost` — nilai ini di-*bake* ke file JS saat build, jadi perangkat pengguna lain tidak akan bisa mengakses API kalau masih `localhost`). Setelah diisi, jalankan ulang dengan `docker compose up -d --build` (bukan cuma `restart`, karena nilainya sudah ter-*bake* sejak build sebelumnya).
 
 ## Peran Pengguna
 

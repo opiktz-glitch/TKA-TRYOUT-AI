@@ -19,7 +19,6 @@ import {
   IconTrendingUp,
   IconClock,
   IconRefresh,
-  IconCpu,
 } from "../components/Icons";
 
 import {

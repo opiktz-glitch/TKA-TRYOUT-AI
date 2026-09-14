@@ -13,10 +13,22 @@ backend/.env
 backend/.env.*
 !backend/.env.example
 
+# .env root - dipakai docker-compose.yml (VITE_API_URL, dsb).
+# Jangan ikut ke-commit karena isinya bisa memuat domain/URL
+# spesifik server produksi.
+/.env
+/.env.*
+!/.env.example
+
 # Database SQLite lokal - jangan ikut ke-commit
 backend/database/*.db
 backend/database/*.sqlite
 backend/database/*.sqlite3
+
+# Sidecar WAL/SHM SQLite (mis. project_tz.db-wal, project_tz.db-shm)
+# - muncul saat PRAGMA journal_mode=WAL aktif, ikut ke-track kalau
+# pakai `git add -A` karena pola di atas cuma cocok akhiran .db persis
+backend/database/*.db-*
 
 # OS / editor
 .DS_Store

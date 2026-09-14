@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 
 import Sidebar from "../components/Sidebar";
@@ -52,17 +52,7 @@ function TeacherScores() {
   const [selectedTryoutId, setSelectedTryoutId] = useState("");
 
 
-  useEffect(() => {
-    loadTryoutOptions();
-  }, []);
-
-  useEffect(() => {
-    loadScores();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTryoutId]);
-
-
-  async function loadTryoutOptions() {
+  const loadTryoutOptions = useCallback(async () => {
     try {
       const data = await getTryouts();
 
@@ -76,10 +66,10 @@ function TeacherScores() {
     } catch (err) {
       console.error("LOAD TRYOUT OPTIONS ERROR:", err);
     }
-  }
+  }, [user]);
 
 
-  async function loadScores() {
+  const loadScores = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
@@ -93,7 +83,16 @@ function TeacherScores() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [selectedTryoutId]);
+
+
+  useEffect(() => {
+    loadTryoutOptions();
+  }, [loadTryoutOptions]);
+
+  useEffect(() => {
+    loadScores();
+  }, [loadScores]);
 
 
   const filteredScores = scores.filter((item) => {

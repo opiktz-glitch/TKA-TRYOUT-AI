@@ -172,6 +172,10 @@ export function AuthProvider({
 }
 
 
+// useAuth sengaja tetap satu file dengan AuthProvider (dipakai di 8
+// tempat) supaya tidak perlu ubah banyak import untuk manfaat yang
+// cuma soal Fast Refresh saat development, nol dampak ke production.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth() {
 
   return useContext(

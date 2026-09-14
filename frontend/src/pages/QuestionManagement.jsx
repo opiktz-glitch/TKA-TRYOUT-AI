@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import Sidebar from "../components/Sidebar";
 import Header from "../components/Header";
@@ -286,7 +286,7 @@ function QuestionManagement() {
   // LOAD SUBJECTS
   // ======================================================
 
-  async function loadSubjects() {
+  const loadSubjects = useCallback(async () => {
 
     try {
 
@@ -306,14 +306,14 @@ function QuestionManagement() {
         "Gagal mengambil mata pelajaran"
       );
     }
-  }
+  }, []);
 
 
   // ======================================================
   // LOAD QUESTIONS
   // ======================================================
 
-  async function loadQuestions() {
+  const loadQuestions = useCallback(async () => {
 
     try {
 
@@ -340,7 +340,7 @@ function QuestionManagement() {
 
       setLoading(false);
     }
-  }
+  }, []);
 
 
   // ======================================================
@@ -353,7 +353,7 @@ function QuestionManagement() {
 
     loadQuestions();
 
-  }, []);
+  }, [loadSubjects, loadQuestions]);
 
 
   // ======================================================

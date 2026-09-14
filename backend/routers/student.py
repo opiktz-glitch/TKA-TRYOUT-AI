@@ -823,7 +823,67 @@ def start_tryout(
 
     db.add(attempt)
 
-    db.commit()
+    try:
+
+        db.commit()
+
+    except IntegrityError:
+
+        # Race condition: request lain (double-klik tombol
+        # "Mulai", atau dua tab dibuka bersamaan) berhasil
+        # membuat attempt IN_PROGRESS duluan di antara
+        # pengecekan existing_attempt di atas dan commit ini.
+        # Index unik parsial uq_attempt_active_per_student_tryout
+        # (models.py) menolak insert kedua ini di level
+        # database. Alih-alih menampilkan error 500 ke siswa,
+        # ambil ulang attempt yang menang duluan dan
+        # perlakukan seperti kasus "tryout masih dalam proses".
+
+        db.rollback()
+
+        existing_attempt = (
+            db.query(Attempt)
+            .filter(
+                Attempt.tryout_id == tryout.id,
+                Attempt.student_id == student.id,
+                Attempt.status == "IN_PROGRESS",
+            )
+            .order_by(
+                Attempt.created_at.desc()
+            )
+            .first()
+        )
+
+        if not existing_attempt:
+            # Tidak seharusnya terjadi (IntegrityError tapi
+            # tidak ketemu baris yang bentrok) — lempar ulang
+            # supaya tidak diam-diam menyembunyikan masalah lain.
+            raise
+
+        return {
+            "success": True,
+            "message": "Tryout masih dalam proses",
+
+            "attempt_id": existing_attempt.id,
+
+            "tryout_id": existing_attempt.tryout_id,
+
+            "student_id": existing_attempt.student_id,
+
+            "started_at": existing_attempt.started_at,
+
+            "finished_at": existing_attempt.finished_at,
+
+            "status": existing_attempt.status,
+
+            "score": existing_attempt.score,
+
+            "duration_minutes": (
+                tryout.duration_minutes
+            ),
+
+            "total_questions": question_count,
+        }
 
     db.refresh(attempt)
 

@@ -10,6 +10,8 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     UniqueConstraint,
+    Index,
+    text,
 )
 from sqlalchemy.orm import relationship
 
@@ -458,6 +460,58 @@ class Attempt(Base):
     created_at = Column(
         DateTime,
         default=datetime.utcnow
+    )
+
+    # =====================================================
+    # CEGAH RACE CONDITION: DUA ATTEMPT AKTIF BERSAMAAN
+    #
+    # Endpoint start_tryout() (routers/student.py) sebelumnya
+    # hanya CEK dulu ("apakah sudah ada attempt IN_PROGRESS?")
+    # baru INSERT kalau tidak ada — pola check-then-act ini
+    # tidak aman kalau dua request datang nyaris bersamaan
+    # (double-klik tombol mulai, atau dua tab dibuka
+    # bersamaan): keduanya bisa lolos pengecekan sebelum
+    # salah satu sempat commit, menghasilkan DUA baris
+    # IN_PROGRESS untuk siswa+tryout yang sama dan
+    # mengacaukan nilai/riwayat (attempt mana yang "asli").
+    #
+    # Index unik PARSIAL di bawah ini menegakkan di level
+    # database: untuk kombinasi (student_id, tryout_id) yang
+    # sama, HANYA BOLEH ADA SATU baris dengan
+    # status='IN_PROGRESS' pada satu waktu. Sengaja dibuat
+    # parsial (pakai *_where, bukan UniqueConstraint biasa)
+    # supaya siswa tetap boleh mengerjakan ulang (retake)
+    # tryout yang sama berkali-kali — banyak baris dengan
+    # status='SUBMITTED' untuk pasangan yang sama tetap sah,
+    # yang dilarang cuma dua IN_PROGRESS sekaligus.
+    #
+    # Kalau dua request tetap lolos race di level aplikasi,
+    # SQLite/PostgreSQL akan menolak INSERT kedua dengan
+    # IntegrityError — start_tryout() menangkap ini dan
+    # mengambil ulang baris yang menang, bukan menampilkan
+    # error 500 ke siswa.
+    #
+    # PENTING — MIGRASI DATABASE YANG SUDAH ADA:
+    # Base.metadata.create_all() TIDAK menambahkan index baru
+    # ke tabel yang sudah ada sebelumnya (hanya membuat tabel
+    # yang belum ada). Untuk database project_tz.db yang sudah
+    # berjalan, index ini perlu dibuat manual sekali lewat SQL:
+    #   CREATE UNIQUE INDEX uq_attempt_active_per_student_tryout
+    #   ON t_attempt (student_id, tryout_id)
+    #   WHERE status = 'IN_PROGRESS';
+    # Instalasi baru (database baru) otomatis mendapat index
+    # ini lewat create_all() seperti biasa.
+    # =====================================================
+
+    __table_args__ = (
+        Index(
+            "uq_attempt_active_per_student_tryout",
+            "student_id",
+            "tryout_id",
+            unique=True,
+            sqlite_where=text("status = 'IN_PROGRESS'"),
+            postgresql_where=text("status = 'IN_PROGRESS'"),
+        ),
     )
 
 

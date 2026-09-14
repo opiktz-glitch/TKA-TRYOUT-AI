@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
 import Sidebar from "../components/Sidebar";
@@ -67,18 +67,10 @@ function StudentTryoutList() {
   const [error, setError] = useState("");
 
   // =====================================================
-  // LOAD AWAL
-  // =====================================================
-
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  // =====================================================
   // LOAD DATA
   // =====================================================
 
-  async function loadData() {
+  const loadData = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
@@ -119,7 +111,15 @@ function StudentTryoutList() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
+
+  // =====================================================
+  // LOAD AWAL
+  // =====================================================
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   // =====================================================
   // GET SUBJECT NAME
