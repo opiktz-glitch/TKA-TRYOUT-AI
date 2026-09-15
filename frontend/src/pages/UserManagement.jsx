@@ -531,12 +531,13 @@ function UserManagement() {
 
                     <tr>
 
+                      <th className="align-center">No</th>
                       <th className="align-center">ID</th>
                       <th className="align-center">Username</th>
                       <th className="align-center">Nama</th>
                       <th className="align-center">Role</th>
                       <th className="align-center">Status</th>
-                      <th className="align-left">Aksi</th>
+                      <th className="align-center">Aksi</th>
 
                     </tr>
 
@@ -545,9 +546,13 @@ function UserManagement() {
 
                   <tbody>
 
-                    {filteredUsers.map((item) => (
+                    {filteredUsers.map((item, index) => (
 
                       <tr key={item.id}>
+
+                        <td className="align-center">
+                          {index + 1}
+                        </td>
 
                         <td>
                           {item.id}

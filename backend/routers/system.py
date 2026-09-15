@@ -231,12 +231,15 @@ async def get_system_status(
     provider_status = await ai_providers.get_provider_status(db, active_provider)
 
     # "host"/"base_url" cuma info kosmetik tambahan untuk 2 provider
-    # bawaan (Ollama = alamat lokal, Gemini = endpoint cloud). Untuk
-    # provider baru yang belum dikenal di sini, cukup tampilkan
-    # labelnya saja — tidak memengaruhi status online/offline di atas.
+    # bawaan (Ollama = alamat server yang sedang dipakai — bisa
+    # localhost ATAU server lain kalau admin sudah override lewat
+    # Pengaturan, lihat provider_status.base_url; Gemini = endpoint
+    # cloud tetap). Untuk provider baru yang belum dikenal di sini,
+    # cukup tampilkan labelnya saja — tidak memengaruhi status
+    # online/offline di atas.
     if active_provider == "OLLAMA":
-        host = parse_ai_host(OLLAMA_BASE_URL)
-        base_url = OLLAMA_BASE_URL
+        host = parse_ai_host(provider_status.base_url or OLLAMA_BASE_URL)
+        base_url = provider_status.base_url or OLLAMA_BASE_URL
     elif active_provider == "GEMINI":
         host = "Google Gemini (cloud)"
         base_url = GEMINI_BASE_URL

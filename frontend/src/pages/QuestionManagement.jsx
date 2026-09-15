@@ -2069,7 +2069,7 @@ function QuestionManagement() {
                       <th className="align-center">No</th>
                       <th className="align-center">ID</th>
                       <th className="align-center">Mata Pelajaran</th>
-                      <th className="align-left">Pertanyaan</th>
+                      <th className="align-center">Pertanyaan</th>
                       <th className="align-center">Tingkat</th>
                       <th className="align-center">Bobot</th>
                       <th className="align-center">Status</th>
@@ -2245,7 +2245,21 @@ function QuestionManagement() {
                       justifyContent: "space-between",
                       flexWrap: "wrap",
                       gap: 12,
-                      padding: "14px 4px 4px",
+                      padding: "14px 4px",
+                      // Tetap terlihat di bagian bawah walau daftar soal
+                      // di tabel di atasnya panjang & di-scroll — sama
+                      // seperti pola .modal-footer (lihat App.css),
+                      // supaya tidak perlu scroll ke paling bawah dulu
+                      // baru tombol halaman muncul. "bottom: 0" lengket
+                      // ke tepi bawah AREA SCROLL-nya (elemen ".content"
+                      // di App.css, bukan seluruh window), karena itu
+                      // nearest scrolling ancestor dari tabel ini.
+                      position: "sticky",
+                      bottom: 0,
+                      background: "white",
+                      borderTop: "1px solid var(--line)",
+                      boxShadow: "0 -2px 6px rgba(0, 0, 0, 0.04)",
+                      zIndex: 2,
                     }}
                   >
                     <span style={{ fontSize: 13, color: "#6b7280" }}>

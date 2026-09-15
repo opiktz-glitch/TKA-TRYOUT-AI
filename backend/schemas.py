@@ -277,6 +277,12 @@ class ProviderStatus(BaseModel):
     model: str
     detail: str | None = None
     masked_key: str | None = None  # mis. "••••••••ab12" — tidak pernah key penuh
+    # Alamat server (host) provider ini — HANYA relevan untuk provider
+    # yang berjalan sebagai server terpisah (mis. Ollama), bukan cloud
+    # API dengan endpoint tetap (mis. Gemini). Lihat configurable_base_url.
+    configurable_base_url: bool = False
+    base_url: str | None = None  # nilai EFEKTIF yang sedang dipakai (override admin, atau default)
+    default_base_url: str | None = None  # nilai bawaan dari .env, dipakai kalau admin belum override
 
 
 class AIProvidersResponse(BaseModel):
@@ -290,9 +296,11 @@ class AIProviderUpdate(BaseModel):
 
 class ProviderConfigUpdate(BaseModel):
     # None/tidak dikirim -> field tidak diubah (biarkan nilai lama).
-    # String kosong "" -> sengaja dikosongkan/dihapus.
+    # String kosong "" -> sengaja dikosongkan/dihapus (base_url kembali
+    # ke default .env, api_key/model kembali ke belum diisi).
     api_key: str | None = None
     model: str | None = None
+    base_url: str | None = None
 
 
 class AIStatusResponse(BaseModel):

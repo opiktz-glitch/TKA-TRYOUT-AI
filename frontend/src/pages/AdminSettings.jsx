@@ -355,7 +355,14 @@ function AdminSettings() {
 
       const drafts = {};
       for (const p of data.providers) {
-        drafts[p.provider] = { apiKey: "", model: p.model || "" };
+        drafts[p.provider] = {
+          apiKey: "",
+          model: p.model || "",
+          // Alamat EFEKTIF yang sedang dipakai (override admin kalau
+          // ada, atau default bawaan) — bukan dikosongkan seperti
+          // apiKey, supaya admin langsung lihat & bisa edit nilainya.
+          baseUrl: p.base_url || p.default_base_url || "",
+        };
       }
       setConfigDrafts(drafts);
     } catch (err) {
@@ -405,14 +412,28 @@ function AdminSettings() {
     setConfigError((prev) => ({ ...prev, [providerKey]: "" }));
     setConfigSuccess((prev) => ({ ...prev, [providerKey]: "" }));
 
+    const providerOption = (providers?.providers || []).find(
+      (p) => p.provider === providerKey
+    );
+
     const draft = configDrafts[providerKey] || {};
     const trimmedKey = (draft.apiKey || "").trim();
     const trimmedModel = (draft.model || "").trim();
+    const trimmedBaseUrl = (draft.baseUrl || "").trim();
+    const supportsBaseUrl = !!providerOption?.configurable_base_url;
 
     if (!trimmedModel) {
       setConfigError((prev) => ({
         ...prev,
         [providerKey]: "Nama model wajib diisi",
+      }));
+      return;
+    }
+
+    if (supportsBaseUrl && !trimmedBaseUrl) {
+      setConfigError((prev) => ({
+        ...prev,
+        [providerKey]: "Alamat server wajib diisi (atau tekan \"Kembalikan ke Default\")",
       }));
       return;
     }
@@ -423,10 +444,12 @@ function AdminSettings() {
       // Kalau input key dikosongkan, jangan kirim api_key sama
       // sekali (undefined) supaya key lama yang sudah tersimpan
       // di database tidak ikut terhapus hanya karena admin cuma
-      // mau ganti nama model.
+      // mau ganti nama model. baseUrl cuma dikirim untuk provider
+      // yang memang mendukungnya (mis. Ollama).
       const data = await updateProviderConfig(providerKey, {
         apiKey: trimmedKey ? trimmedKey : undefined,
         model: trimmedModel,
+        baseUrl: supportsBaseUrl ? trimmedBaseUrl : undefined,
       });
 
       setProviders(data);
@@ -435,14 +458,18 @@ function AdminSettings() {
 
       setConfigDrafts((prev) => ({
         ...prev,
-        [providerKey]: { apiKey: "", model: updated?.model || trimmedModel },
+        [providerKey]: {
+          apiKey: "",
+          model: updated?.model || trimmedModel,
+          baseUrl: updated?.base_url || updated?.default_base_url || trimmedBaseUrl,
+        },
       }));
 
       setConfigSuccess((prev) => ({
         ...prev,
         [providerKey]: trimmedKey
           ? "API key & model berhasil disimpan."
-          : "Model berhasil diperbarui.",
+          : "Pengaturan berhasil diperbarui.",
       }));
     } catch (err) {
       console.error("UPDATE PROVIDER CONFIG ERROR:", err);
@@ -484,6 +511,47 @@ function AdminSettings() {
       setConfigError((prev) => ({
         ...prev,
         [providerKey]: err.message || "Gagal menghapus API key",
+      }));
+    } finally {
+      setConfigSaving((prev) => ({ ...prev, [providerKey]: false }));
+    }
+  }
+
+
+  // Kembalikan alamat server (base URL) provider ke default bawaan
+  // (mesin sendiri, mis. http://localhost:11434) — mengirim base_url
+  // kosong secara eksplisit supaya backend menghapus override yang
+  // tersimpan, BUKAN cuma mengosongkan input di layar.
+  async function handleResetBaseUrl(providerKey) {
+    setConfigError((prev) => ({ ...prev, [providerKey]: "" }));
+    setConfigSuccess((prev) => ({ ...prev, [providerKey]: "" }));
+
+    try {
+      setConfigSaving((prev) => ({ ...prev, [providerKey]: true }));
+
+      const data = await updateProviderConfig(providerKey, { baseUrl: "" });
+
+      setProviders(data);
+
+      const updated = data.providers.find((p) => p.provider === providerKey);
+
+      setConfigDrafts((prev) => ({
+        ...prev,
+        [providerKey]: {
+          ...prev[providerKey],
+          baseUrl: updated?.base_url || updated?.default_base_url || "",
+        },
+      }));
+
+      setConfigSuccess((prev) => ({
+        ...prev,
+        [providerKey]: `Alamat server dikembalikan ke default (${updated?.default_base_url || "mesin sendiri"}).`,
+      }));
+    } catch (err) {
+      console.error("RESET BASE URL ERROR:", err);
+      setConfigError((prev) => ({
+        ...prev,
+        [providerKey]: err.message || "Gagal mengembalikan alamat default",
       }));
     } finally {
       setConfigSaving((prev) => ({ ...prev, [providerKey]: false }));
@@ -876,7 +944,7 @@ function AdminSettings() {
               {/* ============================================= */}
 
               {!providerLoading && (providers?.providers || []).map((option, index) => {
-                const draft = configDrafts[option.provider] || { apiKey: "", model: "" };
+                const draft = configDrafts[option.provider] || { apiKey: "", model: "", baseUrl: "" };
                 const isSaving = !!configSaving[option.provider];
                 const errMsg = configError[option.provider];
                 const okMsg = configSuccess[option.provider];
@@ -974,6 +1042,30 @@ function AdminSettings() {
                       />
                     </div>
 
+                    {option.configurable_base_url && (
+                      <div className="form-group" style={{ marginBottom: 18 }}>
+                        <label>Alamat Server (Base URL)</label>
+
+                        <input
+                          type="text"
+                          value={draft.baseUrl}
+                          onChange={(e) => updateDraft(option.provider, "baseUrl", e.target.value)}
+                          placeholder={option.default_base_url || "http://localhost:11434"}
+                          autoComplete="off"
+                        />
+
+                        <small style={{ color: "#6b7280" }}>
+                          Kosongkan lalu klik "Kembalikan ke Default" untuk
+                          pakai mesin sendiri ({option.default_base_url || "http://localhost:11434"}).
+                          Untuk production, isi manual dengan alamat server
+                          tempat Ollama benar-benar berjalan, mis.{" "}
+                          <code>http://ollama:11434</code> (service Docker
+                          Compose) atau <code>http://10.0.0.5:11434</code>{" "}
+                          (server terpisah di jaringan).
+                        </small>
+                      </div>
+                    )}
+
                     <div
                       style={{
                         display: "flex",
@@ -981,6 +1073,17 @@ function AdminSettings() {
                         justifyContent: "flex-end",
                       }}
                     >
+                      {option.configurable_base_url && (
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={isSaving}
+                          onClick={() => handleResetBaseUrl(option.provider)}
+                        >
+                          Kembalikan ke Default
+                        </button>
+                      )}
+
                       {option.requires_api_key && option.configured && (
                         <button
                           type="button"

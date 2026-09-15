@@ -83,6 +83,15 @@ class ProviderDefinition:
     BESAR justru untuk MENGURANGI jumlah panggilan API (lebih
     murah & lebih kecil peluang kena rate limit / gagal jaringan
     di tengah proses), bukan karena butuh dibatasi.
+
+    `configurable_base_url` = True kalau provider ini menunjuk ke
+    SERVER yang alamatnya bisa berbeda-beda tergantung tempat deploy
+    (mis. Ollama — bisa di localhost laptop, container Docker
+    terpisah, atau server GPU lain di jaringan/production). Provider
+    cloud dengan endpoint tetap (mis. Gemini, selalu ke domain
+    Google) TIDAK butuh ini, jadi dibiarkan False. Kalau True,
+    `default_base_url` WAJIB diisi — nilai bawaan yang dipakai kalau
+    admin belum meng-override lewat Pengaturan.
     """
 
     def __init__(
@@ -93,6 +102,8 @@ class ProviderDefinition:
         call_fn,
         status_fn,
         extract_chunk_chars: int,
+        configurable_base_url: bool = False,
+        default_base_url: str | None = None,
     ):
         self.key = key
         self.label = label
@@ -100,6 +111,8 @@ class ProviderDefinition:
         self.extract_chunk_chars = extract_chunk_chars
         self.call_fn = call_fn
         self.status_fn = status_fn
+        self.configurable_base_url = configurable_base_url
+        self.default_base_url = default_base_url
 
 
 # Dict biasa (bukan list) supaya lookup by key O(1) & urutan
@@ -302,6 +315,55 @@ def set_active_provider(db: Session, provider_key: str) -> None:
         db.add(AppSetting(key=ACTIVE_PROVIDER_SETTING_KEY, value=provider_key))
 
 
+def get_provider_base_url(db: Session, provider_key: str, default: str) -> str:
+    """
+    Alamat server EFEKTIF untuk provider yang configurable_base_url
+    (saat ini: Ollama). Kalau admin belum pernah mengisi override
+    lewat Pengaturan, otomatis jatuh ke `default` (nilai dari .env,
+    yaitu OLLAMA_BASE_URL — biasanya http://localhost:11434, alamat
+    laptop/server itu sendiri). Ini yang membuat setting-nya
+    "opsional": tidak diisi = pakai mesin sendiri, diisi = pakai
+    server manapun yang ditunjuk.
+    """
+
+    return get_provider_config(
+        db, provider_key, "base_url", default=default
+    ) or default
+
+
+def validate_base_url(url: str) -> str:
+    """
+    Validasi ringan alamat server yang diinput admin: wajib diawali
+    http:// atau https://, dan tidak boleh cuma skema tanpa host.
+    Tanda "/" di akhir dibuang supaya penggabungan
+    f"{base_url}/api/tags" dkk tidak pernah menghasilkan "//".
+    Melempar HTTPException(400) kalau tidak valid.
+    """
+
+    cleaned = url.strip().rstrip("/")
+
+    if not cleaned.lower().startswith(("http://", "https://")):
+
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Alamat server harus diawali http:// atau https://, "
+                "contoh: http://192.168.1.10:11434"
+            )
+        )
+
+    host_part = cleaned.split("://", 1)[1]
+
+    if not host_part:
+
+        raise HTTPException(
+            status_code=400,
+            detail="Alamat server tidak lengkap (tidak ada host setelah skema)."
+        )
+
+    return cleaned
+
+
 def mask_api_key(api_key: str) -> str:
     """Jangan pernah kirim API key penuh balik ke frontend — cukup
     beberapa karakter terakhir supaya admin bisa mengenali key mana
@@ -320,13 +382,13 @@ def mask_api_key(api_key: str) -> str:
 # ADAPTER: OLLAMA (lokal, tidak butuh API key)
 # =========================================================
 
-async def _fetch_ollama_models() -> tuple[list[str], bool]:
+async def _fetch_ollama_models(base_url: str) -> tuple[list[str], bool]:
 
     try:
 
         async with httpx.AsyncClient(timeout=5.0) as client:
 
-            response = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
+            response = await client.get(f"{base_url}/api/tags")
 
         response.raise_for_status()
 
@@ -349,6 +411,8 @@ async def call_ollama_provider(
     prompt: str, db: Session, larger_output: bool = False
 ) -> dict:
 
+    base_url = get_provider_base_url(db, "OLLAMA", default=OLLAMA_BASE_URL)
+
     model = get_provider_config(
         db, "OLLAMA", "model", default=OLLAMA_MODEL
     ) or OLLAMA_MODEL
@@ -360,8 +424,22 @@ async def call_ollama_provider(
     # input+output digabung) ikut dinaikkan proporsional — kalau
     # cuma num_predict yang dinaikkan tanpa num_ctx, jatah untuk
     # TEKS INPUT justru makin sempit.
-    num_predict = 1200 if larger_output else 600
-    num_ctx = 4096 if larger_output else 2048
+    #
+    # Nilai num_predict SEBELUMNYA (1200) terlalu kecil: satu chunk
+    # (maks ~4000 karakter, lihat extract_chunk_chars OLLAMA di
+    # register_provider()) bisa berisi beberapa soal + opsi +
+    # penjelasan sekaligus, dan JSON hasilnya bisa dengan mudah
+    # butuh lebih dari 1200 token. Kalau generate kena batas
+    # num_predict SEBELUM JSON selesai ditutup, hasilnya JSON
+    # SETENGAH JADI (kurung tidak lengkap) -> gagal di-parse ->
+    # error "Hasil AI (Ollama) tidak berupa JSON yang valid" padahal
+    # Ollama-nya sendiri berhasil merespons dengan normal. num_ctx
+    # dinaikkan mengikuti (1333 token perkiraan untuk chunk 4000
+    # karakter + ~500 token instruksi prompt + 3000 token jatah
+    # output = butuh muat sampai ~4800 token, num_ctx 6144 memberi
+    # ruang lebih).
+    num_predict = 3000 if larger_output else 600
+    num_ctx = 6144 if larger_output else 2048
 
     payload = {
         "model": model,
@@ -384,17 +462,23 @@ async def call_ollama_provider(
     }
 
     # num_ctx yang lebih besar butuh lebih banyak waktu komputasi
-    # (terutama di laptop tanpa GPU khusus), jadi timeout HTTP ikut
+    # (terutama di laptop tanpa GPU khusus, atau Ollama yang diakses
+    # dari komputer lain lewat jaringan), jadi timeout HTTP ikut
     # dilonggarkan supaya panggilan larger_output tidak keburu
     # dianggap timeout padahal Ollama masih memproses secara wajar.
-    request_timeout = 240.0 if larger_output else 120.0
+    # SENGAJA masih di bawah timeout frontend untuk endpoint yang
+    # sama (280 detik, lihat processDocumentChunk di
+    # frontend/src/services/api.js) supaya backend sempat mengirim
+    # HTTPException 504 dengan pesan yang jelas duluan, bukan malah
+    # browser yang mengabort request tanpa pesan spesifik.
+    request_timeout = 260.0 if larger_output else 120.0
 
     try:
 
         async with httpx.AsyncClient(timeout=request_timeout) as client:
 
             response = await client.post(
-                f"{OLLAMA_BASE_URL}/api/chat",
+                f"{base_url}/api/chat",
                 json=payload
             )
 
@@ -405,10 +489,13 @@ async def call_ollama_provider(
         raise HTTPException(
             status_code=503,
             detail=(
-                f"Tidak dapat terhubung ke Ollama di {OLLAMA_BASE_URL}. "
-                "Pastikan Ollama sudah berjalan (buka aplikasi Ollama "
-                f"atau jalankan 'ollama serve'), dan model '{model}' "
-                f"sudah di-pull ('ollama pull {model}')."
+                f"Tidak dapat terhubung ke Ollama di {base_url}. "
+                "Pastikan Ollama sudah berjalan di alamat tsb (buka "
+                "aplikasi Ollama atau jalankan 'ollama serve' di server "
+                f"tujuan), dan model '{model}' sudah di-pull "
+                f"('ollama pull {model}'). Kalau alamat ini baru saja "
+                "diubah dari Pengaturan, periksa kembali apakah "
+                "alamatnya benar."
             )
         )
 
@@ -451,7 +538,9 @@ async def call_ollama_provider(
 
 async def status_ollama_provider(db: Session) -> ProviderStatus:
 
-    installed_models, reachable = await _fetch_ollama_models()
+    base_url = get_provider_base_url(db, "OLLAMA", default=OLLAMA_BASE_URL)
+
+    installed_models, reachable = await _fetch_ollama_models(base_url)
 
     model = get_provider_config(
         db, "OLLAMA", "model", default=OLLAMA_MODEL
@@ -460,7 +549,7 @@ async def status_ollama_provider(db: Session) -> ProviderStatus:
     detail = None
 
     if not reachable:
-        detail = "Ollama tidak terdeteksi berjalan di laptop ini"
+        detail = f"Ollama tidak terdeteksi berjalan di {base_url}"
     elif not installed_models:
         # Reachable tapi belum ada satupun model ter-pull. Beda
         # kasus dari "model tertentu belum di-pull" di bawah, jadi
@@ -484,6 +573,9 @@ async def status_ollama_provider(db: Session) -> ProviderStatus:
         model=model,
         detail=detail,
         masked_key=None,
+        configurable_base_url=True,
+        base_url=base_url,
+        default_base_url=OLLAMA_BASE_URL,
     )
 
 
@@ -717,6 +809,13 @@ register_provider(ProviderDefinition(
     # Kecil karena context window Ollama lokal (num_ctx) terbatas
     # — lihat penjelasan lengkap di call_ollama_provider().
     extract_chunk_chars=4000,
+    # Alamat server Ollama BISA diarahkan admin lewat Pengaturan (mis.
+    # ke server GPU terpisah saat production), bukan cuma localhost.
+    # default_base_url = OLLAMA_BASE_URL dari .env (default bawaan
+    # http://localhost:11434 kalau .env tidak mengisi) dipakai kalau
+    # admin belum pernah mengisi override.
+    configurable_base_url=True,
+    default_base_url=OLLAMA_BASE_URL,
 ))
 
 register_provider(ProviderDefinition(

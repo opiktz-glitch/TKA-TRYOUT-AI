@@ -303,19 +303,21 @@ function StudentManagement() {
                 <table className="user-table">
                   <thead>
                     <tr>
-                      <th>ID</th>
-                      <th>NIS</th>
-                      <th>Nama</th>
-                      <th>Username</th>
-                      <th>Sekolah</th>
-                      <th>Kelas</th>
-                      <th>Aksi</th>
+                      <th className="align-center">No</th>
+                      <th className="align-center">ID</th>
+                      <th className="align-center">NIS</th>
+                      <th className="align-center">Nama</th>
+                      <th className="align-center">Username</th>
+                      <th className="align-center">Sekolah</th>
+                      <th className="align-center">Kelas</th>
+                      <th className="align-center">Aksi</th>
                     </tr>
                   </thead>
 
                   <tbody>
-                    {filteredStudents.map((item) => (
+                    {filteredStudents.map((item, index) => (
                       <tr key={item.id}>
+                        <td className="align-center">{index + 1}</td>
                         <td>{item.id}</td>
                         <td><strong>{item.student_code}</strong></td>
                         <td>{item.full_name}</td>

@@ -204,6 +204,40 @@ async def update_provider_config(
         else:
             ai_providers.delete_provider_config(db, provider_key, "model")
 
+    if setting_data.base_url is not None:
+
+        new_base_url = setting_data.base_url.strip()
+
+        if new_base_url:
+
+            if not definition.configurable_base_url:
+
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Provider '{definition.label}' tidak mendukung "
+                        "pengaturan alamat server (base URL)."
+                    )
+                )
+
+            # Validasi format URL saja (http/https + host). Sengaja
+            # TIDAK dites konektivitasnya di sini (beda dari validasi
+            # API key Gemini) — server tujuan (mis. Ollama di mesin
+            # lain) mungkin sedang offline sementara padahal alamatnya
+            # sudah benar, dan admin boleh menyimpan konfigurasi dulu
+            # sebelum server itu benar-benar dinyalakan.
+            new_base_url = ai_providers.validate_base_url(new_base_url)
+
+            ai_providers.set_provider_config(
+                db, provider_key, "base_url", new_base_url
+            )
+
+        else:
+
+            # Dikosongkan -> kembali ke default_base_url (biasanya
+            # alamat mesin sendiri, http://localhost:11434).
+            ai_providers.delete_provider_config(db, provider_key, "base_url")
+
     db.commit()
 
     return await _providers_response(db)

@@ -448,7 +448,7 @@ export async function updateActiveProvider(provider) {
 // Simpan/ganti API key & model milik SATU provider (bekerja untuk
 // provider mana pun, bukan cuma Gemini — cukup kirim providerKey
 // yang sesuai, mis. "GEMINI", "OLLAMA", atau provider baru lainnya).
-export async function updateProviderConfig(providerKey, { apiKey, model } = {}) {
+export async function updateProviderConfig(providerKey, { apiKey, model, baseUrl } = {}) {
   const body = {};
 
   // undefined -> field tidak dikirim sama sekali -> backend tidak
@@ -460,6 +460,12 @@ export async function updateProviderConfig(providerKey, { apiKey, model } = {}) 
 
   if (model !== undefined) {
     body.model = model;
+  }
+
+  // baseUrl: "" dikirim eksplisit -> backend reset ke alamat default
+  // (mesin sendiri). undefined -> tidak dikirim -> tidak diubah.
+  if (baseUrl !== undefined) {
+    body.base_url = baseUrl;
   }
 
   return apiFetch(`/api/settings/providers/${providerKey}/config`, {

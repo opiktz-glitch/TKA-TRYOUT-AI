@@ -844,15 +844,15 @@ function TryoutManagement() {
                   <thead>
                     <tr>
                       <th className="align-center">No</th>
-                      <th>ID</th>
-                      <th>Judul Tryout</th>
-                      <th>Mata Pelajaran</th>
-                      <th>Kelas</th>
-                      <th>Soal</th>
-                      <th>Durasi</th>
-                      <th>Keterangan</th>
-                      <th>Status</th>
-                      <th className="sticky-col">Aksi</th>
+                      <th className="align-center">ID</th>
+                      <th className="align-center">Judul Tryout</th>
+                      <th className="align-center">Mata Pelajaran</th>
+                      <th className="align-center">Kelas</th>
+                      <th className="align-center">Soal</th>
+                      <th className="align-center">Durasi</th>
+                      <th className="align-center">Keterangan</th>
+                      <th className="align-center">Status</th>
+                      <th className="align-center sticky-col">Aksi</th>
                     </tr>
                   </thead>
 
@@ -950,7 +950,18 @@ function TryoutManagement() {
                       justifyContent: "space-between",
                       flexWrap: "wrap",
                       gap: 12,
-                      padding: "14px 4px 4px",
+                      padding: "14px 4px",
+                      // Sama seperti Bank Soal (QuestionManagement.jsx) —
+                      // lihat komentar lengkap di sana. Nempel di bawah
+                      // area scroll (.content) supaya tidak perlu scroll
+                      // ke paling bawah tabel dulu baru tombol halaman
+                      // muncul.
+                      position: "sticky",
+                      bottom: 0,
+                      background: "white",
+                      borderTop: "1px solid var(--line)",
+                      boxShadow: "0 -2px 6px rgba(0, 0, 0, 0.04)",
+                      zIndex: 2,
                     }}
                   >
                     <span style={{ fontSize: 13, color: "#6b7280" }}>

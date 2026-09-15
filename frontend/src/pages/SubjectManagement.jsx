@@ -364,12 +364,13 @@ function SubjectManagement() {
 
                     <tr>
 
+                      <th className="align-center">No</th>
                       <th className="align-center">ID</th>
                       <th className="align-center">Kode</th>
                       <th className="align-center">Nama</th>
                       <th className="align-center">Deskripsi</th>
                       <th className="align-center">Status</th>
-                      <th className="align-left">Aksi</th>
+                      <th className="align-center">Aksi</th>
 
                     </tr>
 
@@ -378,9 +379,13 @@ function SubjectManagement() {
 
                   <tbody>
 
-                    {filteredSubjects.map((item) => (
+                    {filteredSubjects.map((item, index) => (
 
                       <tr key={item.id}>
+
+                        <td className="align-center">
+                          {index + 1}
+                        </td>
 
                         <td>
                           {item.id}

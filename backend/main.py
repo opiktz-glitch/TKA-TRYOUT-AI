@@ -1,4 +1,5 @@
 
+import os
 import logging
 
 from fastapi import FastAPI, Request
@@ -95,6 +96,87 @@ def _bootstrap_secret_key_on_startup() -> None:
 
 
 _bootstrap_secret_key_on_startup()
+
+
+# ==========================================
+# BOOTSTRAP ADMIN DEFAULT (SEKALI SAAT STARTUP, HANYA KALAU
+# TABEL t_user MASIH BENAR-BENAR KOSONG)
+#
+# Kenapa ini perlu: endpoint POST /api/users (bikin user baru)
+# mewajibkan role ADMIN yang sudah login (lihat dependencies.py
+# require_role("ADMIN")) — jadi kalau database masih kosong total
+# (mis. deploy pertama kali ke hosting dengan filesystem ephemeral
+# yang reset tiap redeploy, seperti Back4App/Koyeb/Render free
+# tier), TIDAK ADA CARA membuat admin pertama lewat API biasa:
+# butuh admin buat login, tapi butuh login buat bikin admin.
+#
+# Fungsi ini memutus lingkaran itu: HANYA jalan kalau db.query(User)
+# benar-benar 0 baris (jadi TIDAK PERNAH menimpa/mengubah data user
+# yang sudah ada di deployment normal/lokal) — begitu ada minimal
+# 1 user (siapa pun perannya), fungsi ini tidak melakukan apa-apa
+# lagi selama-lamanya sampai tabel user kosong lagi.
+#
+# Kredensial diambil dari environment variable DEFAULT_ADMIN_USERNAME
+# / DEFAULT_ADMIN_PASSWORD kalau diisi (WAJIB diisi sendiri di
+# Back4App/Render/dst demi keamanan) — kalau tidak diisi, fallback
+# ke "admin"/"admin123" supaya tetap bisa dipakai untuk testing
+# cepat, TAPI harus segera diganti manual lewat halaman Ubah
+# Password begitu berhasil login pertama kali.
+# ==========================================
+
+def _bootstrap_default_admin_on_startup() -> None:
+
+    db = SessionLocal()
+
+    try:
+
+        user_count = db.query(models.User).count()
+
+        if user_count > 0:
+            return
+
+        default_username = (
+            os.getenv("DEFAULT_ADMIN_USERNAME", "admin").strip() or "admin"
+        )
+        default_password = (
+            os.getenv("DEFAULT_ADMIN_PASSWORD", "123456").strip()
+            or "123456"
+        )
+
+        admin_user = models.User(
+            username=default_username,
+            password_hash=core_auth.hash_password(default_password),
+            full_name="Administrator",
+            role="ADMIN",
+            is_active=True,
+        )
+
+        db.add(admin_user)
+        db.commit()
+
+        logging.getLogger(__name__).warning(
+            "Tabel t_user kosong — akun admin default '%s' "
+            "otomatis dibuat. SEGERA login dan ganti password lewat "
+            "halaman Ubah Password (jangan dibiarkan pakai kredensial "
+            "default, terutama kalau DEFAULT_ADMIN_PASSWORD tidak "
+            "pernah di-set manual di environment variable hosting).",
+            default_username,
+        )
+
+    except Exception:
+
+        # Sama seperti bootstrap SECRET_KEY di atas — jangan sampai
+        # startup server gagal total hanya karena ini error.
+        logging.getLogger(__name__).exception(
+            "Gagal bootstrap akun admin default saat startup"
+        )
+
+    finally:
+
+        db.close()
+
+
+_bootstrap_default_admin_on_startup()
 
 
 # ==========================================
