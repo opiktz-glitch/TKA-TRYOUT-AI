@@ -854,3 +854,39 @@ export async function downloadBackup(filename) {
 
   window.URL.revokeObjectURL(url);
 }
+
+
+// =========================================================
+// PENGATURAN > BACKUP > IMPORT — Restore Database
+//
+// restoreFromExistingBackup() memilih salah satu file dari daftar
+// backup yang sudah ada di server (hasil getBackups()).
+//
+// restoreFromUpload() mengirim file .db dari komputer admin sendiri
+// lewat FormData (mirip prepareDocumentExtraction() di atas).
+//
+// KEDUANYA mengirim confirm=true SETELAH admin menekan tombol
+// konfirmasi di UI (lihat AdminSettings.jsx) — backend menolak
+// request tanpa confirm=true sebagai lapisan pengaman kedua, karena
+// restore MENIMPA SELURUH DATABASE yang sedang aktif.
+// =========================================================
+
+export async function restoreFromExistingBackup(filename) {
+  return apiFetch(
+    `/api/settings/backups/${encodeURIComponent(filename)}/restore?confirm=true`,
+    {
+      method: "POST",
+    }
+  );
+}
+
+export async function restoreFromUpload(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("confirm", "true");
+
+  return apiFetch("/api/settings/backups/restore-upload", {
+    method: "POST",
+    body: formData,
+  });
+}

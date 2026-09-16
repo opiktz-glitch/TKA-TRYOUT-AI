@@ -18,6 +18,8 @@ import {
   getBackups,
   createBackupNow,
   downloadBackup,
+  restoreFromExistingBackup,
+  restoreFromUpload,
 } from "../services/api";
 import { useAuth } from "../auth/AuthContext";
 
@@ -130,6 +132,34 @@ function AdminSettings() {
   const [downloadingFilename, setDownloadingFilename] = useState("");
 
 
+  // ======================================================
+  // IMPORT / RESTORE DATABASE (Pengaturan > Backup > Import)
+  //
+  // Dua sumber restore:
+  // - "existing"  -> pilih salah satu file dari daftar `backups` di
+  //                  atas (sudah ada di server).
+  // - "upload"     -> file dipilih admin dari komputernya sendiri
+  //                  lewat <input type="file">.
+  //
+  // restoreConfirmTarget menampung AKSI YANG SEDANG MENUNGGU
+  // KONFIRMASI (bukan langsung dieksekusi begitu tombol diklik) —
+  // restore MENIMPA SELURUH DATABASE aktif, jadi selalu lewat modal
+  // konfirmasi dulu, baru benar-benar dipanggil ke API kalau admin
+  // menekan tombol konfirmasi di dalam modal itu.
+  // ======================================================
+
+  const [selectedUploadFile, setSelectedUploadFile] = useState(null);
+
+  const [restoreConfirmTarget, setRestoreConfirmTarget] = useState(null);
+  // { source: "existing", filename } atau { source: "upload", file }
+
+  const [restoringFilename, setRestoringFilename] = useState("");
+  const [restoringUpload, setRestoringUpload] = useState(false);
+
+  const [restoreActionError, setRestoreActionError] = useState("");
+  const [restoreActionSuccess, setRestoreActionSuccess] = useState("");
+
+
   useEffect(() => {
     loadProviders();
     loadSecretKeyStatus();
@@ -203,6 +233,79 @@ function AdminSettings() {
       setBackupActionError(err.message || "Gagal mengunduh backup");
     } finally {
       setDownloadingFilename("");
+    }
+  }
+
+
+  function handleSelectUploadFile(e) {
+    const file = e.target.files?.[0] || null;
+    setSelectedUploadFile(file);
+    setRestoreActionError("");
+    setRestoreActionSuccess("");
+  }
+
+
+  // Dipanggil dari tombol "Restore" di tiap baris daftar backup —
+  // BELUM langsung restore, cuma membuka modal konfirmasi.
+  function requestRestoreFromExisting(filename) {
+    setRestoreActionError("");
+    setRestoreActionSuccess("");
+    setRestoreConfirmTarget({ source: "existing", filename });
+  }
+
+
+  // Dipanggil dari tombol "Import File Ini" di bagian upload —
+  // sama, cuma membuka modal konfirmasi dulu.
+  function requestRestoreFromUpload() {
+    if (!selectedUploadFile) return;
+
+    setRestoreActionError("");
+    setRestoreActionSuccess("");
+    setRestoreConfirmTarget({ source: "upload", file: selectedUploadFile });
+  }
+
+
+  function cancelRestoreConfirm() {
+    setRestoreConfirmTarget(null);
+  }
+
+
+  // Benar-benar menjalankan restore — HANYA dipanggil dari tombol
+  // konfirmasi di dalam modal, setelah admin membaca peringatannya.
+  async function confirmRestore() {
+    if (!restoreConfirmTarget) return;
+
+    setRestoreActionError("");
+    setRestoreActionSuccess("");
+
+    try {
+      let data;
+
+      if (restoreConfirmTarget.source === "existing") {
+        setRestoringFilename(restoreConfirmTarget.filename);
+        data = await restoreFromExistingBackup(restoreConfirmTarget.filename);
+      } else {
+        setRestoringUpload(true);
+        data = await restoreFromUpload(restoreConfirmTarget.file);
+      }
+
+      setRestoreActionSuccess(
+        `${data.message} (Backup pengaman dari kondisi sebelum restore: ${data.safety_backup_filename})`
+      );
+
+      setSelectedUploadFile(null);
+
+      // Muat ulang daftar backup — restore barusan otomatis membuat
+      // 1 backup pengaman baru, jadi daftar perlu di-refresh supaya
+      // itu langsung terlihat.
+      await loadBackups();
+    } catch (err) {
+      console.error("RESTORE BACKUP ERROR:", err);
+      setRestoreActionError(err.message || "Gagal melakukan restore database");
+    } finally {
+      setRestoringFilename("");
+      setRestoringUpload(false);
+      setRestoreConfirmTarget(null);
     }
   }
 
@@ -1404,10 +1507,157 @@ function AdminSettings() {
                           ? "Mengunduh..."
                           : "Download"}
                       </button>
+
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        style={{ color: "#b45309", borderColor: "#fbbf24" }}
+                        disabled={restoringFilename === backup.filename}
+                        onClick={() => requestRestoreFromExisting(backup.filename)}
+                      >
+                        {restoringFilename === backup.filename
+                          ? "Me-restore..."
+                          : "Restore"}
+                      </button>
                     </div>
                   ))}
                 </div>
               )}
+
+              {/* ===================================== */}
+              {/* IMPORT DARI FILE LOKAL                 */}
+              {/* ===================================== */}
+
+              <div
+                style={{
+                  marginTop: 32,
+                  paddingTop: 24,
+                  borderTop: "1px solid var(--line)",
+                }}
+              >
+                <h3 style={{ marginTop: 0, marginBottom: 6, fontSize: 15 }}>
+                  Import Database dari File Lokal
+                </h3>
+
+                <p style={{ marginTop: 0, marginBottom: 14, color: "#6b7280", fontSize: 13 }}>
+                  Upload file backup (.db/.sqlite/.sqlite3) dari komputer Anda
+                  sendiri — misalnya backup lama yang pernah di-download, atau
+                  dipindah dari server lain. File yang diupload akan
+                  MENGGANTIKAN seluruh database yang sedang aktif.
+                </p>
+
+                {restoreActionError && (
+                  <div className="error-message" style={{ marginBottom: 14 }}>
+                    {restoreActionError}
+                  </div>
+                )}
+
+                {restoreActionSuccess && (
+                  <div
+                    className="alert-success"
+                    style={{
+                      backgroundColor: "#d4edda",
+                      color: "#155724",
+                      padding: "10px",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      marginBottom: "14px",
+                    }}
+                  >
+                    {restoreActionSuccess}
+                  </div>
+                )}
+
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                  <input
+                    type="file"
+                    accept=".db,.sqlite,.sqlite3"
+                    onChange={handleSelectUploadFile}
+                    style={{ fontSize: 13 }}
+                  />
+
+                  <button
+                    type="button"
+                    className="primary-button"
+                    disabled={!selectedUploadFile || restoringUpload}
+                    onClick={requestRestoreFromUpload}
+                  >
+                    {restoringUpload ? "Me-restore..." : "Import File Ini"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ===================================== */}
+          {/* MODAL KONFIRMASI RESTORE DATABASE      */}
+          {/* ===================================== */}
+
+          {restoreConfirmTarget && (
+            <div className="modal-overlay" onClick={cancelRestoreConfirm}>
+              <div
+                className="modal"
+                style={{ width: "480px", maxWidth: "92vw" }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="modal-header">
+                  <div>
+                    <h2>Konfirmasi Restore Database</h2>
+                  </div>
+                  <button
+                    type="button"
+                    className="modal-close"
+                    onClick={cancelRestoreConfirm}
+                  >
+                    ×
+                  </button>
+                </div>
+
+                <div style={{ padding: "4px 22px 22px" }}>
+                  <p style={{ fontSize: 13, marginTop: 0 }}>
+                    Anda akan me-restore database dari{" "}
+                    <strong>
+                      {restoreConfirmTarget.source === "existing"
+                        ? restoreConfirmTarget.filename
+                        : restoreConfirmTarget.file.name}
+                    </strong>
+                    .
+                  </p>
+
+                  <p style={{ fontSize: 13, color: "#b45309" }}>
+                    Tindakan ini akan MENGGANTIKAN seluruh data yang sedang
+                    aktif sekarang (semua user, soal, dan hasil tryout) dengan
+                    isi file ini. Database saat ini akan otomatis di-backup
+                    dulu sebelum ditimpa, jadi masih bisa dikembalikan lewat
+                    Restore sekali lagi kalau ternyata salah pilih file — tapi
+                    perubahan APA PUN yang terjadi SETELAH backup pengaman itu
+                    tetap akan hilang.
+                  </p>
+
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={cancelRestoreConfirm}
+                      disabled={restoringUpload || !!restoringFilename}
+                    >
+                      Batal
+                    </button>
+
+                    <button
+                      type="button"
+                      className="primary-button"
+                      style={{ backgroundColor: "#b45309" }}
+                      onClick={confirmRestore}
+                      disabled={restoringUpload || !!restoringFilename}
+                    >
+                      {restoringUpload || restoringFilename
+                        ? "Me-restore..."
+                        : "Ya, Timpa Database Sekarang"}
+                    </button>
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 

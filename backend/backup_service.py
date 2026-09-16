@@ -33,12 +33,14 @@ BACKUP_RETENTION_DAYS   Backup lebih tua dari sekian hari otomatis
 
 import os
 import re
+import shutil
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from config import DATABASE_URL
+from database import engine
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -161,6 +163,129 @@ def list_backups() -> list[BackupFile]:
     files.sort(key=lambda f: f.created_at, reverse=True)
 
     return files
+
+
+@dataclass
+class RestoreResult:
+    restored_from: str
+    safety_backup_filename: str
+    restored_at: datetime
+
+
+# 16 byte pertama SETIAP file SQLite valid selalu persis string ini
+# (diakhiri null byte) — cara paling murah & cepat untuk menolak file
+# yang jelas-jelas bukan database SQLite SEBELUM mencoba membukanya
+# sungguhan (mis. admin salah pilih file .txt/.jpg secara tidak
+# sengaja).
+_SQLITE_HEADER = b"SQLite format 3\x00"
+
+
+def validate_sqlite_file(path: Path) -> None:
+    """
+    Validasi bahwa file di `path` benar-benar file database SQLite
+    yang sehat, SEBELUM dipakai untuk menimpa database aplikasi yang
+    sedang berjalan. Melempar ValueError (pesan Bahasa Indonesia,
+    aman ditampilkan langsung ke admin) kalau tidak valid.
+
+    Dua lapis pengecekan:
+    1. Header 16 byte pertama — menolak file yang jelas bukan SQLite
+       tanpa perlu membuka koneksi sama sekali (cepat, murah).
+    2. "PRAGMA integrity_check" — membuka file sungguhan dan meminta
+       SQLite memeriksa struktur internalnya. Ini menangkap kasus
+       file rusak/truncated yang kebetulan masih punya header yang
+       benar (mis. upload terputus di tengah jalan).
+    """
+
+    try:
+        with open(path, "rb") as f:
+            header = f.read(len(_SQLITE_HEADER))
+    except OSError as exc:
+        raise ValueError(f"Gagal membaca file: {exc}") from exc
+
+    if header != _SQLITE_HEADER:
+        raise ValueError(
+            "File yang dipilih bukan database SQLite yang valid "
+            "(header file tidak cocok)."
+        )
+
+    try:
+        conn = sqlite3.connect(str(path))
+        try:
+            result = conn.execute("PRAGMA integrity_check").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.DatabaseError as exc:
+        raise ValueError(
+            f"File database ini rusak/tidak bisa dibaca SQLite: {exc}"
+        ) from exc
+
+    if not result or result[0] != "ok":
+        raise ValueError(
+            "File database ini gagal pemeriksaan integritas SQLite "
+            "(kemungkinan rusak atau tidak lengkap). Restore dibatalkan "
+            "untuk keamanan — database aplikasi TIDAK diubah."
+        )
+
+
+def restore_database(source_path: Path) -> RestoreResult:
+    """
+    Timpa database aplikasi yang sedang aktif dengan isi file di
+    `source_path` (yang HARUS sudah lolos validate_sqlite_file()
+    sebelum fungsi ini dipanggil — fungsi ini sendiri tidak validasi
+    ulang, supaya caller bisa menampilkan pesan error yang lebih
+    spesifik lebih dulu ke admin).
+
+    Langkah-langkah demi keamanan:
+    1. Backup database yang SEDANG AKTIF dulu (pakai backup_database()
+       yang sudah ada) SEBELUM ditimpa — supaya restore yang salah
+       pilih file tetap bisa "dibatalkan" lewat backup ini.
+    2. Tutup semua koneksi database yang sedang dipegang aplikasi
+       (engine.dispose()) — supaya file tidak dalam keadaan terkunci
+       saat ditimpa, terutama penting di Windows.
+    3. Timpa file database secara atomic (tulis ke file sementara di
+       folder yang sama dulu, baru os.replace() — supaya kalau proses
+       copy gagal di tengah jalan, database asli tidak ikut rusak).
+    4. Hapus sidecar WAL/SHM lama (project_tz.db-wal/-shm) yang mungkin
+       masih menunjuk ke isi database SEBELUM restore — kalau
+       dibiarkan, SQLite bisa "menggabungkan" isi WAL lama yang sudah
+       tidak relevan ke database yang baru saja di-restore.
+
+    Melempar ValueError kalau DATABASE_URL bukan SQLite lokal (restore
+    manual seperti ini belum didukung untuk Turso/Postgres — lihat
+    catatan yang sama di backup_database()).
+    """
+
+    target_path = _resolve_sqlite_path(DATABASE_URL)
+
+    if not target_path.exists():
+        raise FileNotFoundError(f"Database tidak ditemukan di: {target_path}")
+
+    # 1. Backup pengaman dari kondisi SEBELUM restore.
+    safety_backup = backup_database()
+
+    # 2. Lepas semua koneksi yang sedang dipegang connection pool.
+    engine.dispose()
+
+    # 3. Timpa secara atomic.
+    tmp_path = target_path.with_suffix(target_path.suffix + ".restoring")
+    try:
+        shutil.copyfile(source_path, tmp_path)
+        os.replace(tmp_path, target_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+    # 4. Bersihkan sidecar WAL/SHM lama supaya tidak "mencemari"
+    # database yang baru saja di-restore.
+    for suffix in ("-wal", "-shm"):
+        sidecar = target_path.with_name(target_path.name + suffix)
+        sidecar.unlink(missing_ok=True)
+
+    return RestoreResult(
+        restored_from=source_path.name,
+        safety_backup_filename=safety_backup.filename,
+        restored_at=datetime.now(),
+    )
 
 
 def resolve_backup_path(filename: str) -> Path:

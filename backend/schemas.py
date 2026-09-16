@@ -351,6 +351,16 @@ class BackupActionResponse(BaseModel):
     removed_old_count: int = 0
 
 
+class RestoreActionResponse(BaseModel):
+    success: bool
+    message: str
+    restored_from: str
+    # Nama file backup pengaman yang otomatis dibuat dari kondisi
+    # SEBELUM restore ini dijalankan — ditampilkan ke admin supaya
+    # tahu ke mana harus "kembali" kalau restore ternyata salah.
+    safety_backup_filename: str
+
+
 class QuestionResponse(BaseModel):
     id: int
     subject_id: int

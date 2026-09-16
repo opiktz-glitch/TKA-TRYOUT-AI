@@ -1,4 +1,8 @@
-from fastapi import APIRouter, Depends, HTTPException
+import os
+import tempfile
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -15,6 +19,7 @@ from schemas import (
     BackupFileResponse,
     BackupListResponse,
     BackupActionResponse,
+    RestoreActionResponse,
 )
 from dependencies import require_role
 
@@ -570,4 +575,151 @@ def download_backup(
         path=path,
         filename=path.name,
         media_type="application/octet-stream",
+    )
+
+
+# =========================================================
+# IMPORT / RESTORE DATABASE (Pengaturan > Backup > Import)
+#
+# Dua jalur restore:
+#
+# 1. restore_from_existing_backup  -> pilih salah satu backup yang
+#    SUDAH ADA di server (dari daftar GET /backups, dibuat otomatis
+#    tiap 24 jam atau lewat tombol "Backup Sekarang").
+# 2. restore_from_upload           -> upload file .db dari komputer
+#    admin sendiri (mis. backup lama yang di-download manual
+#    sebelumnya, atau dipindah dari server lain).
+#
+# KEDUANYA WAJIB `confirm=True` — restore MENIMPA SELURUH DATABASE
+# yang sedang aktif (semua user, soal, hasil tryout tergantikan isi
+# file yang di-restore). Parameter ini lapisan pertahanan kedua di
+# level API (selain konfirmasi di sisi UI), supaya panggilan API
+# yang tidak sengaja/asal-asalan tidak langsung menjalankan restore.
+#
+# Sebelum menimpa, backup_service.restore_database() OTOMATIS
+# membuat backup dari kondisi SEBELUM restore ini — jadi restore yang
+# salah pilih file tetap bisa "dibatalkan" dengan restore sekali lagi
+# dari backup pengaman itu.
+#
+# CATATAN: setelah restore, SECRET_KEY yang tersimpan di database
+# bisa saja berbeda dari sebelumnya (ikut isi file yang di-restore)
+# — kalau begitu, sesi login admin yang sedang aktif akan otomatis
+# tidak valid lagi dan perlu login ulang. Ini diberi tahu lewat pesan
+# di response, bukan dianggap error.
+# =========================================================
+
+@router.post(
+    "/backups/{filename}/restore",
+    response_model=RestoreActionResponse,
+)
+def restore_from_existing_backup(
+    filename: str,
+    confirm: bool = False,
+    current_user: User = Depends(require_role("ADMIN")),
+):
+    """Restore database dari salah satu file backup yang sudah ada
+    di server (dipilih dari daftar di halaman Pengaturan > Backup)."""
+
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Restore membutuhkan konfirmasi eksplisit "
+                "(confirm=true) karena akan MENIMPA seluruh database "
+                "yang sedang aktif."
+            ),
+        )
+
+    try:
+        path = backup_service.resolve_backup_path(filename)
+        backup_service.validate_sqlite_file(path)
+        result = backup_service.restore_database(path)
+
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+    return RestoreActionResponse(
+        success=True,
+        message=(
+            f"Database berhasil di-restore dari '{result.restored_from}'. "
+            "Kalau sesi login Anda tiba-tiba diminta login ulang, itu "
+            "normal — SECRET_KEY ikut kembali ke isi backup yang "
+            "di-restore."
+        ),
+        restored_from=result.restored_from,
+        safety_backup_filename=result.safety_backup_filename,
+    )
+
+
+@router.post(
+    "/backups/restore-upload",
+    response_model=RestoreActionResponse,
+)
+async def restore_from_upload(
+    file: UploadFile = File(...),
+    confirm: bool = Form(False),
+    current_user: User = Depends(require_role("ADMIN")),
+):
+    """Restore database dari file .db yang diupload langsung dari
+    komputer admin (bukan dari daftar backup yang ada di server)."""
+
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Restore membutuhkan konfirmasi eksplisit "
+                "(confirm=true) karena akan MENIMPA seluruh database "
+                "yang sedang aktif."
+            ),
+        )
+
+    if not file.filename or not file.filename.lower().endswith(
+        (".db", ".sqlite", ".sqlite3")
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Ekstensi file tidak dikenali. Upload file database "
+                "SQLite (.db/.sqlite/.sqlite3)."
+            ),
+        )
+
+    # Ditulis dulu ke file sementara di disk (BUKAN diproses langsung
+    # dari memori) supaya bisa divalidasi (validate_sqlite_file butuh
+    # file di disk untuk dibuka pakai sqlite3.connect) sebelum benar-
+    # benar dipakai menimpa database aktif.
+    tmp_fd, tmp_name = tempfile.mkstemp(suffix=".db")
+    tmp_path = Path(tmp_name)
+
+    try:
+        with os.fdopen(tmp_fd, "wb") as tmp_file:
+            while chunk := await file.read(1024 * 1024):
+                tmp_file.write(chunk)
+
+        try:
+            backup_service.validate_sqlite_file(tmp_path)
+            result = backup_service.restore_database(tmp_path)
+
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    return RestoreActionResponse(
+        success=True,
+        message=(
+            f"Database berhasil di-restore dari file upload "
+            f"'{file.filename}'. Kalau sesi login Anda tiba-tiba "
+            "diminta login ulang, itu normal — SECRET_KEY ikut "
+            "kembali ke isi backup yang di-restore."
+        ),
+        restored_from=file.filename,
+        safety_backup_filename=result.safety_backup_filename,
     )
