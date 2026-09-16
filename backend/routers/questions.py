@@ -194,24 +194,37 @@ def get_questions(
         .all()
     )
 
+    # =====================================================
+    # AMBIL SEMUA OPTIONS DALAM 1 QUERY (BUKAN PER-SOAL)
+    #
+    # Sebelumnya: 1 query untuk daftar soal + 1 query TERPISAH per
+    # soal untuk options-nya (N+1 query). Di SQLite lokal ini nyaris
+    # tidak kerasa (round-trip ke disk hampir 0ms), tapi begitu
+    # DATABASE_URL mengarah ke Turso, SETIAP query itu jadi round-trip
+    # JARINGAN sungguhan — 100 soal = 101 round-trip = lambat sekali.
+    #
+    # Fix: ambil options utk SEMUA soal sekaligus pakai 1 query
+    # (question_id IN (...)), lalu kelompokkan per soal di Python.
+    # Total jadi 2 query saja, berapa pun jumlah soalnya.
+    # =====================================================
+
+    question_ids = [q.id for q in questions]
+
+    all_options = (
+        db.query(QuestionOption)
+        .filter(QuestionOption.question_id.in_(question_ids))
+        .order_by(QuestionOption.option_code)
+        .all()
+    )
+
+    options_by_question_id = {}
+    for opt in all_options:
+        options_by_question_id.setdefault(opt.question_id, []).append(opt)
+
     result = []
 
     for question in questions:
-
-        options = (
-            db.query(QuestionOption)
-            .filter(
-                QuestionOption.question_id ==
-                question.id
-            )
-            .order_by(
-                QuestionOption.option_code
-            )
-            .all()
-        )
-
-        question.options = options
-
+        question.options = options_by_question_id.get(question.id, [])
         result.append(question)
 
     return result

@@ -31,16 +31,21 @@ BACKUP_RETENTION_DAYS   Backup lebih tua dari sekian hari otomatis
                          dihapus. Default: 14.
 """
 
+import json
 import os
 import re
 import shutil
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
+from sqlalchemy import text as sa_text
+
+import models
 from config import DATABASE_URL
-from database import engine
+from database import IS_LIBSQL, engine
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -314,3 +319,203 @@ def resolve_backup_path(filename: str) -> Path:
         raise FileNotFoundError("File backup tidak ditemukan.")
 
     return path
+
+
+# ==========================================
+# BACKUP/RESTORE UNTUK MODE TURSO (libSQL)
+# ==========================================
+#
+# Semua fungsi di atas (backup_database, restore_database, dst) cuma
+# valid untuk SQLite FILE LOKAL -- caranya benar-benar COPY FILE .db
+# lewat sqlite3.Connection.backup(), yang jelas tidak masuk akal
+# kalau datanya sekarang ada di server Turso, bukan di disk sini.
+#
+# Untuk Turso, pendekatannya beda total: QUERY semua baris dari tiap
+# tabel lewat koneksi SQLAlchemy yang SUDAH ADA (sama seperti yang
+# dipakai aplikasi sehari-hari), lalu serialize ke JSON. Backup ini
+# SENGAJA TIDAK PERNAH ditulis ke disk container -- langsung dikirim
+# sebagai response download ke browser admin saat itu juga (lihat
+# endpoint di routers/settings.py). Alasannya dua:
+#   1. Filesystem container (Back4App dkk) ephemeral -- nyimpen file
+#      backup di sana percuma, hilang pas redeploy.
+#   2. Ini otomatis menjadikan hasil backup PASTI ada "di luar
+#      server" (di komputer admin), tanpa perlu setup storage
+#      eksternal tambahan (S3, dll) yang menambah kompleksitas.
+#
+# Urutan tabel dependency-safe (parent dulu baru child) diambil dari
+# models.Base.metadata.sorted_tables -- SQLAlchemy sendiri yang
+# menghitung urutan ini dari relasi ForeignKey antar tabel, jadi
+# tidak perlu di-hardcode manual dan otomatis tetap benar kalau nanti
+# ada tabel baru ditambahkan ke models.py.
+
+TURSO_BACKUP_FORMAT_VERSION = 1
+
+
+def is_turso_mode() -> bool:
+    """True kalau backend sedang jalan pakai Turso/libSQL, bukan file
+    SQLite lokal. Dipakai routers/settings.py untuk menentukan tombol
+    mana yang ditampilkan ke admin di halaman Pengaturan."""
+
+    return IS_LIBSQL
+
+
+def _json_safe(value):
+    """Ubah tipe data Python yang tidak dikenal json.dumps (datetime,
+    date, Decimal, bytes) jadi bentuk yang aman disimpan & dibaca
+    balik. Kalau tabel di masa depan menyimpan tipe lain di luar ini,
+    tinggal tambah cabang baru di sini."""
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+
+    if isinstance(value, Decimal):
+        return float(value)
+
+    if isinstance(value, bytes):
+        return value.hex()
+
+    return str(value)
+
+
+def export_turso_snapshot() -> dict:
+    """Query semua tabel aplikasi (urutan aman dari
+    Base.metadata.sorted_tables) dan kembalikan sebagai dict yang
+    siap di-JSON-kan:
+
+        {
+          "format_version": 1,
+          "exported_at": "2026-09-16T10:00:00",
+          "tables": {
+            "t_user": [ {...baris1...}, {...baris2...} ],
+            "t_student": [ ... ],
+            ...
+          }
+        }
+
+    Melempar Exception apa pun dari SQLAlchemy kalau query gagal --
+    caller (endpoint API) yang menampilkan pesan errornya ke admin.
+    """
+
+    tables_data = {}
+
+    with engine.connect() as conn:
+        for table in models.Base.metadata.sorted_tables:
+            rows = conn.execute(sa_text(f"SELECT * FROM {table.name}"))
+            column_names = rows.keys()
+
+            tables_data[table.name] = [
+                {
+                    col: _json_safe(value)
+                    for col, value in zip(column_names, row)
+                }
+                for row in rows
+            ]
+
+    return {
+        "format_version": TURSO_BACKUP_FORMAT_VERSION,
+        "exported_at": datetime.now().isoformat(),
+        "tables": tables_data,
+    }
+
+
+def validate_turso_snapshot(data: dict) -> None:
+    """Validasi struktur file backup JSON sebelum dipakai restore.
+    Melempar ValueError dengan pesan jelas kalau tidak valid, supaya
+    endpoint bisa langsung balas 400 tanpa sempat menyentuh database
+    sama sekali."""
+
+    if not isinstance(data, dict):
+        raise ValueError("File backup tidak valid: bukan objek JSON.")
+
+    if data.get("format_version") != TURSO_BACKUP_FORMAT_VERSION:
+        raise ValueError(
+            "File backup tidak dikenali atau dari versi format yang "
+            "tidak didukung."
+        )
+
+    tables = data.get("tables")
+
+    if not isinstance(tables, dict):
+        raise ValueError("File backup tidak valid: bagian 'tables' hilang.")
+
+    known_table_names = {
+        table.name for table in models.Base.metadata.sorted_tables
+    }
+
+    unknown = set(tables.keys()) - known_table_names
+
+    if unknown:
+        raise ValueError(
+            "File backup berisi tabel yang tidak dikenali: "
+            + ", ".join(sorted(unknown))
+        )
+
+
+@dataclass
+class TursoRestoreResult:
+    restored_from_exported_at: str
+    tables_restored: int
+    rows_restored: int
+
+
+def restore_turso_snapshot(data: dict) -> TursoRestoreResult:
+    """Timpa SELURUH isi database Turso dengan isi file backup JSON.
+
+    DESTRUKTIF: semua baris yang ada sekarang di setiap tabel yang
+    disebut di file backup akan DIHAPUS dulu sebelum diisi ulang.
+    Endpoint pemanggil WAJIB mewajibkan admin mengonfirmasi secara
+    eksplisit (lihat parameter confirm di routers/settings.py) dan
+    SANGAT DISARANKAN admin download backup kondisi saat ini dulu
+    (lewat export_turso_snapshot) sebelum restore, karena TIDAK ADA
+    auto-safety-backup otomatis di sini seperti versi SQLite lokal --
+    tidak ada tempat aman menyimpannya di server yang ephemeral.
+
+    Dijalankan dalam SATU transaksi: kalau ada error di tengah jalan
+    (mis. tabel tujuan sudah tidak dikenali oleh model saat ini),
+    seluruh perubahan di-ROLLBACK, database kembali ke kondisi
+    sebelum restore dicoba -- tidak akan berhenti di tengah dengan
+    sebagian tabel sudah kosong.
+    """
+
+    validate_turso_snapshot(data)
+
+    tables_by_name = {
+        table.name: table for table in models.Base.metadata.sorted_tables
+    }
+
+    # Urutan HAPUS: child dulu baru parent (kebalikan sorted_tables),
+    # supaya tidak melanggar constraint foreign key di tengah jalan.
+    delete_order = list(reversed(models.Base.metadata.sorted_tables))
+
+    # Urutan ISI ULANG: parent dulu baru child (urutan asli
+    # sorted_tables), alasan yang sama.
+    insert_order = list(models.Base.metadata.sorted_tables)
+
+    tables_restored = 0
+    rows_restored = 0
+
+    with engine.begin() as conn:
+
+        for table in delete_order:
+            if table.name in data["tables"]:
+                conn.execute(table.delete())
+
+        for table in insert_order:
+            rows = data["tables"].get(table.name)
+
+            if not rows:
+                continue
+
+            conn.execute(table.insert(), rows)
+
+            tables_restored += 1
+            rows_restored += len(rows)
+
+    return TursoRestoreResult(
+        restored_from_exported_at=data.get("exported_at", "?"),
+        tables_restored=tables_restored,
+        rows_restored=rows_restored,
+    )

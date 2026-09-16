@@ -20,6 +20,9 @@ import {
   downloadBackup,
   restoreFromExistingBackup,
   restoreFromUpload,
+  getBackupMode,
+  downloadTursoBackupNow,
+  restoreTursoFromUpload,
 } from "../services/api";
 import { useAuth } from "../auth/AuthContext";
 
@@ -133,6 +136,25 @@ function AdminSettings() {
 
 
   // ======================================================
+  // MODE BACKUP: "sqlite" (copy file, list + download by filename)
+  // atau "turso" (query on-the-fly, satu tombol download langsung,
+  // tanpa daftar file di server). Dicek sekali tiap kali tab
+  // "Backup" dibuka, SEBELUM memutuskan mau panggil loadBackups()
+  // (versi SQLite) atau tidak — supaya tidak sempat menampilkan UI
+  // yang salah lalu berkedip berubah.
+  // ======================================================
+
+  const [backupMode, setBackupMode] = useState(null);
+  const [backupModeLoading, setBackupModeLoading] = useState(true);
+
+  const [downloadingTursoBackup, setDownloadingTursoBackup] = useState(false);
+  const [tursoActionError, setTursoActionError] = useState("");
+
+  const [selectedTursoUploadFile, setSelectedTursoUploadFile] = useState(null);
+  const [restoringTursoUpload, setRestoringTursoUpload] = useState(false);
+
+
+  // ======================================================
   // IMPORT / RESTORE DATABASE (Pengaturan > Backup > Import)
   //
   // Dua sumber restore:
@@ -177,9 +199,37 @@ function AdminSettings() {
     }
 
     if (activeTab === "backup") {
-      loadBackups();
+      loadBackupModeThenBackups();
     }
   }, [activeTab]);
+
+
+  // Cek dulu mode backup mana yang aktif (sqlite/turso) SEBELUM
+  // memutuskan mau panggil loadBackups() (daftar file SQLite di
+  // server) atau tidak — mode "turso" tidak punya daftar file sama
+  // sekali, jadi loadBackups() akan selalu gagal kalau dipaksa
+  // dipanggil di mode itu.
+  async function loadBackupModeThenBackups() {
+    setBackupModeLoading(true);
+
+    try {
+      const data = await getBackupMode();
+      setBackupMode(data.mode);
+
+      if (data.mode === "sqlite") {
+        await loadBackups();
+      }
+    } catch (err) {
+      console.error("GET BACKUP MODE ERROR:", err);
+      // Kalau gagal deteksi mode (mis. endpoint lama/belum ter-deploy),
+      // fallback ke asumsi "sqlite" supaya UI lama tetap tampil
+      // dibanding halaman kosong sama sekali.
+      setBackupMode("sqlite");
+      await loadBackups();
+    } finally {
+      setBackupModeLoading(false);
+    }
+  }
 
 
   async function loadBackups() {
@@ -317,6 +367,71 @@ function AdminSettings() {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+
+  // ======================================================
+  // AKSI BACKUP/RESTORE MODE TURSO
+  // ======================================================
+
+  async function handleDownloadTursoBackup() {
+    setTursoActionError("");
+
+    try {
+      setDownloadingTursoBackup(true);
+      await downloadTursoBackupNow();
+    } catch (err) {
+      console.error("DOWNLOAD TURSO BACKUP ERROR:", err);
+      setTursoActionError(err.message || "Gagal mengunduh backup");
+    } finally {
+      setDownloadingTursoBackup(false);
+    }
+  }
+
+
+  function handleSelectTursoUploadFile(e) {
+    const file = e.target.files?.[0] || null;
+    setSelectedTursoUploadFile(file);
+    setTursoActionError("");
+  }
+
+
+  // Restore Turso TIDAK punya auto-safety-backup (lihat penjelasan
+  // di backup_service.py), jadi modal konfirmasinya juga dibuat
+  // terpisah dari modal restore SQLite di atas — kata-kata
+  // peringatannya sengaja lebih tegas menekankan "download backup
+  // dulu sebelum lanjut".
+  const [tursoRestoreConfirmOpen, setTursoRestoreConfirmOpen] = useState(false);
+
+  function requestRestoreTursoUpload() {
+    if (!selectedTursoUploadFile) return;
+    setTursoActionError("");
+    setTursoRestoreConfirmOpen(true);
+  }
+
+  function cancelTursoRestoreConfirm() {
+    setTursoRestoreConfirmOpen(false);
+  }
+
+  async function confirmTursoRestore() {
+    if (!selectedTursoUploadFile) return;
+
+    setTursoActionError("");
+
+    try {
+      setRestoringTursoUpload(true);
+
+      const data = await restoreTursoFromUpload(selectedTursoUploadFile);
+
+      setBackupActionSuccess(data.message);
+      setSelectedTursoUploadFile(null);
+    } catch (err) {
+      console.error("RESTORE TURSO BACKUP ERROR:", err);
+      setTursoActionError(err.message || "Gagal melakukan restore ke Turso");
+    } finally {
+      setRestoringTursoUpload(false);
+      setTursoRestoreConfirmOpen(false);
+    }
   }
 
 
@@ -1408,6 +1523,96 @@ function AdminSettings() {
                 Backup Database
               </h2>
 
+              {backupModeLoading ? (
+                <p style={{ color: "#6b7280", fontSize: 13 }}>Memuat...</p>
+              ) : backupMode === "turso" ? (
+                <>
+                  <p style={{ marginTop: 0, marginBottom: 22, color: "#6b7280", fontSize: 13 }}>
+                    Database ini berjalan di atas Turso, bukan file SQLite
+                    lokal — backup DAN restore-nya dengan cara berbeda dari
+                    mode biasa: tidak ada daftar file tersimpan di server,
+                    hasil backup langsung diunduh ke komputer Anda saat itu
+                    juga.
+                  </p>
+
+                  {backupActionSuccess && (
+                    <div
+                      className="alert-success"
+                      style={{
+                        backgroundColor: "#d4edda",
+                        color: "#155724",
+                        padding: "10px",
+                        borderRadius: "6px",
+                        fontSize: "13px",
+                        marginBottom: "18px",
+                      }}
+                    >
+                      {backupActionSuccess}
+                    </div>
+                  )}
+
+                  {tursoActionError && (
+                    <div className="error-message" style={{ marginBottom: 18 }}>
+                      {tursoActionError}
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      disabled={downloadingTursoBackup}
+                      onClick={handleDownloadTursoBackup}
+                    >
+                      {downloadingTursoBackup ? "Mengunduh..." : "Download Backup Sekarang"}
+                    </button>
+                  </div>
+
+                  {/* ===================================== */}
+                  {/* IMPORT DARI FILE JSON (TURSO)          */}
+                  {/* ===================================== */}
+
+                  <div
+                    style={{
+                      marginTop: 32,
+                      paddingTop: 24,
+                      borderTop: "1px solid var(--line)",
+                    }}
+                  >
+                    <h3 style={{ marginTop: 0, marginBottom: 6, fontSize: 15 }}>
+                      Import Database dari File Backup
+                    </h3>
+
+                    <p style={{ marginTop: 0, marginBottom: 14, color: "#6b7280", fontSize: 13 }}>
+                      Upload file backup (.json) hasil "Download Backup
+                      Sekarang" di atas. Restore ini akan MENGGANTIKAN
+                      seluruh data yang sedang aktif, dan TIDAK ADA backup
+                      pengaman otomatis untuk mode ini — pastikan sudah
+                      download backup kondisi saat ini kalau masih
+                      dibutuhkan, sebelum lanjut.
+                    </p>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                      <input
+                        type="file"
+                        accept=".json"
+                        onChange={handleSelectTursoUploadFile}
+                        style={{ fontSize: 13 }}
+                      />
+
+                      <button
+                        type="button"
+                        className="primary-button"
+                        disabled={!selectedTursoUploadFile || restoringTursoUpload}
+                        onClick={requestRestoreTursoUpload}
+                      >
+                        {restoringTursoUpload ? "Me-restore..." : "Import File Ini"}
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
               <p style={{ marginTop: 0, marginBottom: 22, color: "#6b7280", fontSize: 13 }}>
                 Backup otomatis berjalan sendiri tiap 24 jam di server.
                 Gunakan tombol di bawah untuk membuat backup tambahan
@@ -1586,6 +1791,8 @@ function AdminSettings() {
                   </button>
                 </div>
               </div>
+                </>
+              )}
             </div>
           )}
 
@@ -1652,6 +1859,73 @@ function AdminSettings() {
                       disabled={restoringUpload || !!restoringFilename}
                     >
                       {restoringUpload || restoringFilename
+                        ? "Me-restore..."
+                        : "Ya, Timpa Database Sekarang"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ===================================== */}
+          {/* MODAL KONFIRMASI RESTORE TURSO         */}
+          {/* ===================================== */}
+
+          {tursoRestoreConfirmOpen && selectedTursoUploadFile && (
+            <div className="modal-overlay" onClick={cancelTursoRestoreConfirm}>
+              <div
+                className="modal"
+                style={{ width: "480px", maxWidth: "92vw" }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="modal-header">
+                  <div>
+                    <h2>Konfirmasi Restore Database (Turso)</h2>
+                  </div>
+                  <button
+                    type="button"
+                    className="modal-close"
+                    onClick={cancelTursoRestoreConfirm}
+                  >
+                    ×
+                  </button>
+                </div>
+
+                <div style={{ padding: "4px 22px 22px" }}>
+                  <p style={{ fontSize: 13, marginTop: 0 }}>
+                    Anda akan me-restore database dari{" "}
+                    <strong>{selectedTursoUploadFile.name}</strong>.
+                  </p>
+
+                  <p style={{ fontSize: 13, color: "#b45309" }}>
+                    Tindakan ini akan MENGGANTIKAN seluruh data yang sedang
+                    aktif sekarang (semua user, soal, dan hasil tryout) dengan
+                    isi file ini. BERBEDA dari mode SQLite lokal — untuk
+                    Turso TIDAK ADA backup pengaman otomatis, jadi kalau
+                    ternyata salah pilih file, perubahan ini TIDAK BISA
+                    dibatalkan kecuali Anda sudah punya backup lain dari
+                    kondisi sebelumnya.
+                  </p>
+
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={cancelTursoRestoreConfirm}
+                      disabled={restoringTursoUpload}
+                    >
+                      Batal
+                    </button>
+
+                    <button
+                      type="button"
+                      className="primary-button"
+                      style={{ backgroundColor: "#b45309" }}
+                      onClick={confirmTursoRestore}
+                      disabled={restoringTursoUpload}
+                    >
+                      {restoringTursoUpload
                         ? "Me-restore..."
                         : "Ya, Timpa Database Sekarang"}
                     </button>

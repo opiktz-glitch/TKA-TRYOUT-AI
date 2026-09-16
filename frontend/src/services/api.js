@@ -904,3 +904,74 @@ export async function restoreFromUpload(file) {
     body: formData,
   });
 }
+
+
+// =========================================================
+// PENGATURAN > BACKUP — Mode Turso (libSQL)
+//
+// getBackupMode() dipanggil sekali saat halaman Pengaturan dibuka,
+// supaya UI tahu harus menampilkan kartu backup versi SQLite (list +
+// download by filename) atau versi Turso (satu tombol download
+// langsung, tanpa daftar file di server).
+//
+// downloadTursoBackupNow() sama seperti downloadBackup() di atas —
+// fetch manual sebagai blob karena responsnya file JSON, bukan JSON
+// hasil apiFetch biasa. Nama file diambil dari header
+// Content-Disposition yang dikirim backend, dengan fallback kalau
+// browser tidak mengizinkan baca header itu (kasus CORS tertentu).
+//
+// restoreTursoFromUpload() upload file backup .json hasil
+// downloadTursoBackupNow() sebelumnya (dari server manapun, format
+// file-nya portable).
+// =========================================================
+
+export async function getBackupMode() {
+  return apiFetch("/api/settings/backup-mode");
+}
+
+export async function downloadTursoBackupNow() {
+  const token = localStorage.getItem("access_token");
+
+  const response = await fetch(
+    `${API_BASE_URL}/api/settings/backups/turso-export`,
+    {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    }
+  );
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(
+      extractErrorMessage(data) || "Gagal mengunduh backup Turso"
+    );
+  }
+
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const match = disposition.match(/filename="([^"]+)"/);
+  const filename = match
+    ? match[1]
+    : `project_tz_turso_${Date.now()}.json`;
+
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  window.URL.revokeObjectURL(url);
+}
+
+export async function restoreTursoFromUpload(file) {
+  const formData = new FormData();
+  formData.append("file", file);
+  formData.append("confirm", "true");
+
+  return apiFetch("/api/settings/backups/turso-restore", {
+    method: "POST",
+    body: formData,
+  });
+}

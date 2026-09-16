@@ -1,9 +1,11 @@
+import json
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -20,6 +22,8 @@ from schemas import (
     BackupListResponse,
     BackupActionResponse,
     RestoreActionResponse,
+    TursoRestoreResponse,
+    BackupModeResponse,
 )
 from dependencies import require_role
 
@@ -722,4 +726,154 @@ async def restore_from_upload(
         ),
         restored_from=file.filename,
         safety_backup_filename=result.safety_backup_filename,
+    )
+
+
+# ==========================================
+# BACKUP/RESTORE UNTUK MODE TURSO (libSQL)
+# ==========================================
+#
+# Semua endpoint di atas (list, create, download, restore) cuma
+# valid untuk mode SQLite file lokal. Kalau backend sedang jalan
+# pakai Turso, endpoint di atas TETAP AKAN GAGAL dengan pesan error
+# yang jelas (dilempar dari backup_service._resolve_sqlite_path),
+# bukan crash diam-diam -- tapi supaya halaman Pengaturan bisa
+# menampilkan tombol yang BENAR sejak awal (bukan tombol yang sudah
+# pasti gagal kalau diklik), frontend perlu tahu dulu mode mana yang
+# aktif lewat GET /backup-mode di bawah ini.
+
+@router.get(
+    "/backup-mode",
+    response_model=BackupModeResponse,
+)
+def get_backup_mode(
+    current_user: User = Depends(require_role("ADMIN")),
+):
+    """Beritahu frontend mode backup mana yang relevan sekarang,
+    supaya halaman Pengaturan > Backup bisa menampilkan UI yang
+    sesuai (list+download by filename untuk SQLite lokal, atau
+    tombol download langsung untuk Turso)."""
+
+    return BackupModeResponse(
+        mode="turso" if backup_service.is_turso_mode() else "sqlite"
+    )
+
+
+@router.get("/backups/turso-export")
+def export_turso_backup(
+    current_user: User = Depends(require_role("ADMIN")),
+):
+    """Query seluruh data lewat koneksi Turso yang aktif, lalu
+    kirim LANGSUNG sebagai file JSON yang otomatis ke-download di
+    browser admin -- TIDAK PERNAH ditulis ke disk container (lihat
+    penjelasan lengkap di backup_service.py bagian Turso)."""
+
+    if not backup_service.is_turso_mode():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Backend ini sedang tidak memakai Turso. Gunakan "
+                "tombol 'Backup Sekarang' biasa untuk mode SQLite "
+                "lokal."
+            ),
+        )
+
+    try:
+        snapshot = backup_service.export_turso_snapshot()
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Gagal mengambil data dari Turso: {exc}",
+        )
+
+    filename = (
+        "project_tz_turso_"
+        f"{datetime.now():%Y%m%d_%H%M%S}.json"
+    )
+
+    return Response(
+        content=json.dumps(snapshot, ensure_ascii=False, indent=2),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        },
+    )
+
+
+@router.post(
+    "/backups/turso-restore",
+    response_model=TursoRestoreResponse,
+)
+async def restore_turso_backup(
+    file: UploadFile = File(...),
+    confirm: bool = Form(False),
+    current_user: User = Depends(require_role("ADMIN")),
+):
+    """Restore SELURUH data Turso dari file JSON hasil
+    GET /backup-turso-export sebelumnya (di server yang sama atau
+    server lain -- format file-nya portable).
+
+    DESTRUKTIF, TANPA auto-safety-backup (lihat alasannya di
+    docstring backup_service.restore_turso_snapshot) -- admin WAJIB
+    sudah download backup kondisi saat ini sendiri sebelum restore
+    kalau masih butuh datanya."""
+
+    if not backup_service.is_turso_mode():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Backend ini sedang tidak memakai Turso. Gunakan "
+                "endpoint restore biasa untuk mode SQLite lokal."
+            ),
+        )
+
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Restore membutuhkan konfirmasi eksplisit "
+                "(confirm=true) karena akan MENIMPA seluruh data "
+                "yang sedang aktif di Turso, TANPA backup pengaman "
+                "otomatis. Pastikan sudah download backup kondisi "
+                "saat ini kalau masih dibutuhkan."
+            ),
+        )
+
+    if not file.filename or not file.filename.lower().endswith(".json"):
+        raise HTTPException(
+            status_code=400,
+            detail="Ekstensi file tidak dikenali. Upload file backup (.json).",
+        )
+
+    try:
+        raw_bytes = await file.read()
+        data = json.loads(raw_bytes)
+        result = backup_service.restore_turso_snapshot(data)
+
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="File yang diupload bukan JSON yang valid.",
+        )
+
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Gagal restore ke Turso: {exc}",
+        )
+
+    return TursoRestoreResponse(
+        success=True,
+        message=(
+            f"Berhasil restore {result.rows_restored} baris di "
+            f"{result.tables_restored} tabel dari file backup "
+            f"(di-export {result.restored_from_exported_at})."
+        ),
+        restored_from_exported_at=result.restored_from_exported_at,
+        tables_restored=result.tables_restored,
+        rows_restored=result.rows_restored,
     )

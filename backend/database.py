@@ -1,6 +1,7 @@
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.pool import NullPool
 
 from config import DATABASE_URL
 
@@ -67,7 +68,19 @@ elif IS_LIBSQL:
     _query = dict(_url.query)
     _auth_token = _query.pop("authToken", None) or _query.pop("auth_token", None)
 
-    _connect_args = {"auth_token": _auth_token} if _auth_token else {}
+    # GAGAL CEPAT dengan pesan jelas kalau token kosong/tidak ada —
+    # daripada diam-diam connect tanpa token, yang nanti baru
+    # ketahuan lewat error dari Turso sendiri ("empty JWT token")
+    # yang kurang jelas asal-usulnya kalau dilihat orang lain.
+    if not _auth_token:
+        raise ValueError(
+            "DATABASE_URL mengarah ke libSQL/Turso tapi parameter "
+            "'authToken' tidak ditemukan atau kosong di URL-nya. "
+            "Formatnya harus: "
+            "sqlite+libsql://<host>?authToken=<TOKEN>&secure=true"
+        )
+
+    _connect_args = {"auth_token": _auth_token}
 
     # URL yang dipakai create_engine() TANPA authToken/auth_token lagi
     # (parameter lain seperti "secure=true" tetap dipertahankan).
@@ -77,9 +90,46 @@ else:
     _connect_args = {}
 
 
+# =========================================================
+# NullPool — KHUSUS LIBSQL/TURSO
+#
+# SQLAlchemy connection pool, SECARA TERPISAH dari rollback di level
+# Session, SELALU memanggil dbapi_connection.rollback() lagi setiap
+# kali sebuah koneksi dikembalikan ke pool — ini yang mulanya bikin
+# libsql-experimental panic (percobaan awal, sudah dilewati). Fix
+# awal (pool_reset_on_return=None) ternyata belum cukup: ditemukan
+# panic KEDUA di titik lain — pembuatan cursor baru dari koneksi yang
+# diambil ULANG dari pool. Polanya acak/intermittent, konsisten
+# muncul tepat di titik REUSE KONEKSI, dari request yang jalan di
+# thread worker berbeda-beda (FastAPI/Starlette menjalankan setiap
+# dependency sync, termasuk get_current_user, di thread pool).
+#
+# Dugaan kuat: binding Rust `libsql-experimental` tidak aman dipakai
+# lintas-thread untuk SATU objek koneksi yang sama — persis pola
+# yang biasanya diselesaikan connection pooling (against database
+# biasa), tapi di sini malah jadi sumber masalah.
+#
+# Fix: NullPool artinya SQLAlchemy TIDAK MENYIMPAN/REUSE koneksi
+# sama sekali — setiap kali sebuah Session butuh koneksi, dibikin
+# BENAR-BENAR BARU dari nol, dipakai, lalu dibuang total (bukan
+# dikembalikan ke pool untuk dipakai request lain). Ini menghapus
+# akar masalah "koneksi lama dipakai dari thread yang beda", dengan
+# konsekuensi: tiap request kena overhead bikin koneksi baru ke
+# Turso (biasanya kecil karena Turso berbasis HTTP, bukan handshake
+# TCP+TLS penuh dari nol tiap kali) — TERMASUK PRAGMA foreign_keys
+# di bawah, yang karena ini jadi ikut jalan di SETIAP request juga
+# (bukan cuma sesekali kayak waktu masih ada pool asli).
+# =========================================================
+
+_engine_kwargs = {"connect_args": _connect_args}
+
+if IS_LIBSQL:
+    _engine_kwargs["poolclass"] = NullPool
+
+
 engine = create_engine(
     _engine_url,
-    connect_args=_connect_args,
+    **_engine_kwargs,
 )
 
 

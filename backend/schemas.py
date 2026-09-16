@@ -361,6 +361,23 @@ class RestoreActionResponse(BaseModel):
     safety_backup_filename: str
 
 
+class TursoRestoreResponse(BaseModel):
+    success: bool
+    message: str
+    # Timestamp dari dalam file backup yang dipulihkan (kapan file
+    # itu di-export), BUKAN kapan restore-nya dijalankan.
+    restored_from_exported_at: str
+    tables_restored: int
+    rows_restored: int
+
+
+class BackupModeResponse(BaseModel):
+    # "sqlite" -> backup berbasis copy file (list + download by
+    # filename tersedia). "turso" -> backup berbasis query on-the-fly
+    # (tidak ada daftar file, cuma tombol download langsung).
+    mode: str
+
+
 class QuestionResponse(BaseModel):
     id: int
     subject_id: int
