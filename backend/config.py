@@ -23,9 +23,6 @@ load_dotenv()
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE_DIR = BASE_DIR / "database"
 
-# Pastikan foldernya ada (aman dipanggil berkali-kali)
-DATABASE_DIR.mkdir(parents=True, exist_ok=True)
-
 DEFAULT_DATABASE_PATH = DATABASE_DIR / "project_tz.db"
 
 # Kalau DATABASE_URL diisi manual di file .env, nilai itu
@@ -43,6 +40,17 @@ DEFAULT_DATABASE_PATH = DATABASE_DIR / "project_tz.db"
 # string kosong -> SQLAlchemy gagal connect dengan error yang
 # membingungkan.
 DATABASE_URL = os.getenv("DATABASE_URL") or f"sqlite:///{DEFAULT_DATABASE_PATH}"
+
+# Folder "database/" HANYA dibuat kalau benar-benar dipakai (mode
+# fallback SQLite file lokal, DATABASE_URL tidak diisi). Sengaja
+# TIDAK dijalankan tanpa syarat seperti sebelumnya — di hosting
+# serverless dengan filesystem read-only (Vercel, dsb), memanggil
+# .mkdir() ke folder ini SELALU gagal ("Read-only file system") dan
+# MENJATUHKAN SELURUH APLIKASI saat import config.py, bahkan waktu
+# DATABASE_URL sudah diisi Turso/libSQL yang sama sekali tidak
+# butuh folder ini. Baru dibuat kalau memang fallback lokal dipakai.
+if DATABASE_URL.startswith("sqlite:///") and not os.getenv("DATABASE_URL"):
+    DATABASE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 SECRET_KEY = os.getenv(
