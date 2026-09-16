@@ -18,8 +18,22 @@
 // kali pindah jaringan WiFi.
 function resolveApiBaseUrl() {
 
+  // Semua path di file ini (lihat pemanggilan apiFetch, mis.
+  // "/api/auth/login") SUDAH diawali "/" sendiri. Kalau
+  // VITE_API_URL yang diisi manual (mis. di Environment
+  // Variables Vercel) juga diakhiri "/", hasil gabungannya jadi
+  // double slash ("https://host.com//api/auth/login"). Reverse
+  // proxy hosting (Back4App/Render/dll) sering me-redirect
+  // double-slash semacam itu ke single-slash — dan redirect
+  // 301/302 itu bikin BROWSER MENGUBAH METHOD POST JADI GET
+  // secara otomatis (perilaku standar fetch, bukan bug di sini),
+  // yang akhirnya bikin login gagal dengan pesan aneh "405
+  // Method Not Allowed" padahal kodenya sudah benar kirim POST.
+  // .replace(/\/+$/, "") menghapus SEMUA garis miring di akhir
+  // string, jadi baik "https://host.com/" maupun
+  // "https://host.com" sama-sama aman dipakai.
   if (import.meta.env.VITE_API_URL) {
-    return import.meta.env.VITE_API_URL;
+    return import.meta.env.VITE_API_URL.replace(/\/+$/, "");
   }
 
   const { protocol, hostname } = window.location;
